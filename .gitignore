@@ -1,0 +1,8 @@
+.DS_Store
+.env.local
+.venv/
+.refresh-work/
+__pycache__/
+*.pyc
+pricecharting.bak.csv
+pricecharting.backup-*.csv

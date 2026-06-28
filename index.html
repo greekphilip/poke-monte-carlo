@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Pokémon Monte Carlo Scenario Lab</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Pokémon Portfolio Valuation</p>
+        <h1>Scenario Lab</h1>
+        <p class="lede">Compare grading assumptions, see the full range of outcomes, and learn which cards create the upside.</p>
+      </div>
+      <div class="data-status" aria-live="polite">
+        <span class="status-dot"></span>
+        <div>
+          <strong id="csvStatus">Loading collection…</strong>
+          <small id="csvDetail">Looking for pricecharting.csv</small>
+        </div>
+        <label class="button small ghost">
+          Choose CSV
+          <input id="csvFileInput" type="file" accept=".csv,text/csv" hidden />
+        </label>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="Primary views">
+      <button class="tab active" id="labTab" data-view="lab" type="button">Scenario Lab</button>
+      <button class="tab" id="optimizerTab" data-view="optimizer" type="button">Grading Optimizer</button>
+      <button class="tab" id="salePlannerTab" data-view="salePlanner" type="button">Sale Planner</button>
+      <button class="tab" id="datasetEditorTab" data-view="datasetEditor" type="button">Dataset Editor</button>
+      <button class="tab" id="detailTab" data-view="detail" type="button" disabled>Scenario Detail</button>
+    </nav>
+
+    <section id="labView" class="view active">
+      <section class="panel assumptions-panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Shared assumptions</p>
+            <h2>Collection and sale costs</h2>
+          </div>
+          <p id="collectionSummary" class="context-copy">Waiting for the collection.</p>
+        </div>
+
+        <div class="field-grid">
+          <label class="field">
+            <span>Acquisition cost</span>
+            <input id="acquisitionCost" type="number" value="300000" min="0" />
+          </label>
+          <label class="field">
+            <span>Selling fee</span>
+            <span class="input-suffix"><input id="sellingFeePct" type="number" value="0" min="0" step="0.1" /><b>%</b></span>
+          </label>
+          <label class="field">
+            <span>Misc. expenses</span>
+            <input id="miscExpenses" type="number" value="15000" min="0" />
+          </label>
+          <label class="field">
+            <span>Market volatility</span>
+            <span class="input-suffix"><input id="volatilityPct" type="number" value="0" min="0" step="0.1" /><b>%</b></span>
+          </label>
+          <label class="field">
+            <span>First editions</span>
+            <select id="firstEditionMode">
+              <option value="exclude">Exclude</option>
+              <option value="include">Include</option>
+              <option value="saved">Use saved suite setting</option>
+            </select>
+          </label>
+        </div>
+
+        <details class="fee-details">
+          <summary>PSA grading fee tiers</summary>
+          <div class="field-grid compact-grid">
+            <label class="field"><span>Up to $1,500</span><input id="fee1500" type="number" value="79.99" min="0" /></label>
+            <label class="field"><span>$1,501–$2,500</span><input id="fee2500" type="number" value="149" min="0" /></label>
+            <label class="field"><span>$2,501–$5,000</span><input id="fee5000" type="number" value="349" min="0" /></label>
+            <label class="field"><span>$5,001–$10,000</span><input id="fee10000" type="number" value="599" min="0" /></label>
+            <label class="field"><span>Over $10,000</span><input id="premiumFee" type="number" value="999" min="0" /></label>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel scenario-panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Grade assumptions</p>
+            <h2>Scenario suite</h2>
+            <p class="context-copy">Each card independently receives a grade using the scenario’s normalized weights.</p>
+          </div>
+          <button id="addScenarioBtn" class="button ghost" type="button">+ Add scenario</button>
+        </div>
+        <div class="weight-explainer">
+          <strong>How cards are selected:</strong>
+          For each PSA scenario, every eligible card is ranked by its expected added value over selling raw. The app tests batches of 0, 50, 100, 150… cards and automatically runs the smallest batch that captures 95% of that scenario’s maximum median-profit improvement.
+          <br><strong>How to read PSA 10:</strong>
+          A 10% weight means each selected card independently has a 10% chance of PSA 10.
+        </div>
+        <div class="table-scroll scenario-scroll">
+          <table class="scenario-table">
+            <thead>
+              <tr>
+                <th class="check-cell">Run</th>
+                <th>Scenario</th>
+                <th>PSA 7</th>
+                <th>PSA 8</th>
+                <th>PSA 9</th>
+                <th>PSA 10</th>
+                <th>Chase PSA 10?</th>
+                <th>Automatic batch</th>
+                <th>Effective mix</th>
+                <th aria-label="Actions"></th>
+              </tr>
+            </thead>
+            <tbody id="scenarioRows"></tbody>
+          </table>
+        </div>
+
+        <div class="run-bar">
+          <label class="field simulation-field">
+            <span>Simulations per scenario</span>
+            <select id="simulationCount" required>
+              <option value="">Choose run size…</option>
+              <option value="1000">1,000</option>
+              <option value="10000">10,000</option>
+              <option value="100000">100,000</option>
+              <option value="1000000">1,000,000</option>
+            </select>
+          </label>
+          <label class="field target-field">
+            <span>Profit target</span>
+            <input id="profitTarget" type="number" value="500000" />
+          </label>
+          <div class="work-estimate">
+            <span>Estimated work</span>
+            <strong id="workEstimate">Choose a run size</strong>
+          </div>
+          <button id="runSuiteBtn" class="button primary" type="button">Run scenario suite</button>
+          <button id="cancelRunBtn" class="button danger hidden" type="button">Cancel</button>
+        </div>
+        <div id="progressRegion" class="progress-region hidden" aria-live="polite">
+          <div class="progress-copy"><span id="runStatus">Preparing…</span><strong id="progressPct">0%</strong></div>
+          <div class="progress-track"><span id="progressBar"></span></div>
+        </div>
+      </section>
+
+      <section id="resultsSection" class="results-stack hidden">
+        <section class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="kicker">One axis, every assumption</p>
+              <h2>Profit distributions</h2>
+              <p class="context-copy">The glow shows density. The dots mark the 5th percentile, median, and 95th percentile. Click a row to investigate it.</p>
+            </div>
+            <div class="legend" aria-label="Chart legend"><span class="p5-dot"></span>P5 <span class="median-dot"></span>Median <span class="p95-dot"></span>P95</div>
+          </div>
+          <div id="comparisonChart" class="chart comparison-chart" role="img" aria-label="Scenario profit distributions"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="kicker">Risk and return</p>
+              <h2>Scenario scorecard</h2>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table id="summaryTable" class="data-table sortable-table">
+              <thead>
+                <tr>
+                  <th data-sort="name">Scenario</th>
+                  <th data-sort="cardCount">Cards graded</th>
+                  <th data-sort="p5">P5</th>
+                  <th data-sort="median">Median</th>
+                  <th data-sort="mean">Mean</th>
+                  <th data-sort="p95">P95</th>
+                  <th data-sort="lossProbability">Chance of loss</th>
+                  <th data-sort="targetProbability">Chance above target</th>
+                  <th data-sort="expectedRoi">Expected ROI</th>
+                </tr>
+              </thead>
+              <tbody id="summaryRows"></tbody>
+            </table>
+          </div>
+          <p class="footnote">Sample minimum and maximum are available in Scenario Detail; percentiles are more stable measures of risk.</p>
+        </section>
+      </section>
+    </section>
+
+    <section id="optimizerView" class="view">
+      <section class="panel optimizer-intro">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Profit versus workload</p>
+            <h2>Find the smallest worthwhile grading batch</h2>
+            <p class="context-copy">Compare several PSA scenarios across many ranked batch sizes. It answers: “How much median profit do I gain by grading the next group of cards—and where does that gain flatten out?”</p>
+          </div>
+        </div>
+        <div class="optimizer-methods">
+          <div>
+            <strong>Expected-value ranking</strong>
+            <p>Starts with every eligible card, estimates each card’s added value under the chosen PSA weights, then adds cards best-to-worst. This is the cleaner way to find diminishing returns.</p>
+          </div>
+          <div>
+            <strong>Scenario comparison</strong>
+            <p>Every selected PSA scenario gets its own color, risk band, and sweet spot on the same chart so you can see whether the efficient grading batch changes with grade assumptions.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Optimizer settings</p>
+            <h2>Choose PSA scenarios to compare</h2>
+            <p class="context-copy">Collection costs, PSA fees, selling fees, volatility, and first-edition settings come from Scenario Lab.</p>
+          </div>
+        </div>
+        <div class="optimizer-controls">
+          <div class="field optimizer-scenario-field">
+            <span>PSA scenarios</span>
+            <div id="optimizerScenarioChoices" class="optimizer-scenario-choices"></div>
+          </div>
+          <label class="field">
+            <span>Simulations</span>
+            <select id="optimizerSimulationCount">
+              <option value="1000">1,000</option>
+              <option value="10000" selected>10,000</option>
+              <option value="100000">100,000</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Ranked batch step</span>
+            <input id="optimizerFrontierStep" type="number" value="50" min="1" />
+          </label>
+          <label class="field">
+            <span>Labor cost per graded card</span>
+            <input id="optimizerLaborCost" type="number" value="0" min="0" />
+            <small>Optional. Use this to price sorting, paperwork, shipping labor, and hassle.</small>
+          </label>
+        </div>
+        <div class="optimizer-run-bar">
+          <div class="work-estimate">
+            <span>Estimated work</span>
+            <strong id="optimizerWorkEstimate">Load the collection first</strong>
+          </div>
+          <button id="runOptimizerBtn" class="button primary" type="button">Run grading optimizer</button>
+          <button id="cancelOptimizerBtn" class="button danger hidden" type="button">Cancel</button>
+        </div>
+        <div id="optimizerProgressRegion" class="progress-region hidden" aria-live="polite">
+          <div class="progress-copy"><span id="optimizerRunStatus">Preparing…</span><strong id="optimizerProgressPct">0%</strong></div>
+          <div class="progress-track"><span id="optimizerProgressBar"></span></div>
+        </div>
+      </section>
+
+      <section id="optimizerResults" class="results-stack hidden">
+        <section id="optimizerSummary" class="optimizer-summary"></section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="kicker">Recommended method</p>
+              <h2>Cards ranked by expected added value</h2>
+              <p class="context-copy">Each colored line is one PSA scenario. Cards are added from most valuable to least valuable under that scenario. Large dots mark each scenario’s smallest batch that captures 95% of its maximum median-profit improvement.</p>
+            </div>
+            <div id="optimizerScenarioLegend" class="optimizer-legend"></div>
+          </div>
+          <div id="frontierChart" class="optimizer-chart" role="img" aria-label="Median profit and uncertainty as ranked cards are added"></div>
+          <div id="globalFrontierExplanation" class="optimizer-callout global-optimizer-callout"></div>
+          <div id="frontierExplanation" class="optimizer-callout"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="kicker">Exactly which cards</p>
+              <h2>Ranked grading list</h2>
+              <p class="context-copy">Choose how many cards to send. The list always takes the highest-ranked cards first; it never chooses random cards.</p>
+            </div>
+            <div class="ranked-list-actions">
+              <label class="field">
+                <span>Ranking scenario</span>
+                <select id="optimizerResultScenario"></select>
+              </label>
+              <button id="downloadOptimizerRankingBtn" class="button ghost" type="button">Download selected cards</button>
+            </div>
+          </div>
+          <div class="batch-builder">
+            <div class="batch-builder-heading">
+              <div>
+                <span>Cards to grade</span>
+                <strong id="optimizerBatchLabel">—</strong>
+              </div>
+              <div class="batch-quick-actions">
+                <button id="useGlobalSweetSpotBtn" class="button primary small" type="button">Use global recommendation</button>
+                <button id="useSweetSpotBtn" class="button ghost small" type="button">Use sweet spot</button>
+                <button id="useBestMedianBtn" class="button ghost small" type="button">Use maximum median</button>
+              </div>
+            </div>
+            <div class="batch-slider-row">
+              <input id="optimizerBatchSlider" class="batch-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Number of ranked cards to grade" />
+              <input id="optimizerBatchNumber" class="batch-number" type="number" min="0" max="0" value="0" step="1" aria-label="Exact number of ranked cards to grade" />
+            </div>
+            <div id="optimizerBatchSummary" class="batch-summary"></div>
+          </div>
+          <label class="field selected-search">
+            <span>Find a card inside this batch</span>
+            <input id="optimizerCardSearch" type="search" placeholder="Card or set name" />
+          </label>
+          <div class="table-scroll optimizer-ranking-scroll">
+            <table class="data-table">
+              <thead><tr><th>Rank</th><th>Card</th><th>Expected added value</th><th>Raw</th><th>PSA 7</th><th>PSA 8</th><th>PSA 9</th><th>PSA 10</th></tr></thead>
+              <tbody id="optimizerRankingRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </section>
+
+    <section id="salePlannerView" class="view">
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Grade · sell raw · hold</p>
+            <h2>Two-stage Sale Planner</h2>
+            <p class="context-copy">First choose how many top expected-value cards to grade. Then choose how many of the remaining cards to sell raw, ranked from highest to lowest raw value. Everything else stays in inventory.</p>
+          </div>
+          <button id="downloadSalePlanBtn" class="button ghost" type="button">Download this plan</button>
+        </div>
+        <div id="salePlannerEmpty" class="optimizer-callout">
+          Run Scenario Lab or Grading Optimizer first. The Sale Planner reuses those simulations so both sliders update immediately.
+        </div>
+        <div id="salePlannerContent" class="hidden">
+          <div class="sale-planner-controls">
+            <label class="field">
+              <span>PSA scenario</span>
+              <select id="salePlannerScenario"></select>
+            </label>
+            <div class="sale-stage-control">
+              <div class="sale-stage-heading">
+                <span>1 · Grade and sell</span>
+                <strong id="salePlannerGradeLabel">—</strong>
+              </div>
+              <input id="salePlannerGradeSlider" type="range" min="0" max="0" value="0" step="1" aria-label="Graded batch checkpoint" />
+              <small>Moves through the simulated ranked batch checkpoints.</small>
+            </div>
+            <div class="sale-stage-control">
+              <div class="sale-stage-heading">
+                <span>2 · Sell raw</span>
+                <strong id="salePlannerRawLabel">—</strong>
+              </div>
+              <div class="batch-slider-row">
+                <input id="salePlannerRawSlider" type="range" min="0" max="0" value="0" step="1" aria-label="Number of remaining cards to sell raw" />
+                <input id="salePlannerRawNumber" class="batch-number" type="number" min="0" max="0" value="0" step="1" aria-label="Exact number of remaining cards to sell raw" />
+              </div>
+              <small>Highest raw-value remaining cards are sold first.</small>
+            </div>
+          </div>
+          <div class="tax-estimate">
+            <label class="tax-toggle">
+              <input id="salePlannerTaxEnabled" type="checkbox" />
+              <span><strong>Estimate 2026 New Jersey income tax</strong><small>Subtract the additional NJ tax caused by positive modeled card profit.</small></span>
+            </label>
+            <label class="field">
+              <span>Gross annual salary</span>
+              <input id="salePlannerSalary" type="number" value="0" min="0" step="1000" />
+            </label>
+            <label class="field">
+              <span>NJ filing schedule</span>
+              <select id="salePlannerFilingStatus">
+                <option value="single">Single / married separate</option>
+                <option value="joint">Joint / head of household</option>
+              </select>
+            </label>
+            <p>Planning estimate only. Gross salary and modeled card cash profit are used as taxable-income proxies; exemptions, deductions, federal tax, and exact inventory cost-basis allocation are not included. Uses the official NJ <a href="https://www.nj.gov/treasury/taxation/taxtables.shtml" target="_blank" rel="noreferrer">“2020 and after” schedules</a> currently applicable in 2026.</p>
+          </div>
+          <section id="salePlannerMetrics" class="optimizer-summary sale-planner-metrics"></section>
+        </div>
+      </section>
+
+      <section id="salePlannerChartPanel" class="panel hidden">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">The second diminishing-return curve</p>
+            <h2>Cash profit as raw cards are sold</h2>
+            <p class="context-copy">The shaded area is P5–P95 grading risk. Raw sales add deterministic cash, so the whole distribution moves upward. The large dot is your current raw-sale count.</p>
+          </div>
+          <div class="optimizer-legend">
+            <span><i style="background:#77e8b5"></i>Median cash profit</span>
+            <span><i style="background:#f6c85f"></i>95% raw-cash point</span>
+          </div>
+        </div>
+        <div id="salePlannerChart" class="optimizer-chart" role="img" aria-label="Cash profit as remaining cards are sold raw"></div>
+        <div id="salePlannerExplanation" class="optimizer-callout"></div>
+      </section>
+
+      <section id="salePlannerRawTablePanel" class="panel hidden">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Raw-sale order</p>
+            <h2>Remaining cards ranked by raw value</h2>
+            <p id="salePlannerRawTableContext" class="context-copy"></p>
+          </div>
+        </div>
+        <div class="raw-table-toolbar">
+          <label class="field selected-search">
+            <span>Find a remaining card</span>
+            <input id="salePlannerRawSearch" type="search" placeholder="Card or set name" />
+          </label>
+          <label class="field">
+            <span>Rows per page</span>
+            <select id="salePlannerRawPageSize">
+              <option value="250">250</option>
+              <option value="500" selected>500</option>
+              <option value="1000">1,000</option>
+              <option value="all">Show all</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-scroll sale-raw-table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Raw rank</th><th>Card</th><th>Raw value</th><th>Decision</th><th>Cumulative net raw cash</th><th>Scenario grade rank</th></tr></thead>
+            <tbody id="salePlannerRawRows"></tbody>
+          </table>
+        </div>
+        <div class="dataset-pagination">
+          <button id="salePlannerRawPrevBtn" class="button ghost small" type="button">← Previous</button>
+          <strong id="salePlannerRawPageStatus">Page 1</strong>
+          <button id="salePlannerRawNextBtn" class="button ghost small" type="button">Next →</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="datasetEditorView" class="view">
+      <section class="panel dataset-refresh-panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Automated price update</p>
+            <h2>Refresh from PriceCharting</h2>
+            <p class="context-copy">Download the full Pokémon export, map its columns, fill missing prices with the bundled ML pipeline, and replace only the prices for the exact cards already in this collection.</p>
+          </div>
+          <button id="refreshDatasetBtn" class="button primary" type="button">Refresh dataset</button>
+        </div>
+        <div class="weight-explainer">
+          <strong>Identity safety gate:</strong> the refresh stops if any current ID is missing or if a set/card name changed. The active CSV is replaced only after every step succeeds.
+        </div>
+        <form id="priceChartingTokenForm" class="refresh-token-form">
+          <label class="field">
+            <span>PriceCharting API token</span>
+            <input id="priceChartingTokenInput" type="password" maxlength="40" autocomplete="new-password" placeholder="Paste the 40-character token" aria-describedby="priceChartingTokenHelp" />
+            <small id="priceChartingTokenHelp">Saved only to this computer’s private .env.local file. The existing token is never sent back to the browser.</small>
+          </label>
+          <button id="savePriceChartingTokenBtn" class="button ghost" type="submit">Save token locally</button>
+        </form>
+        <div class="dataset-refresh-meta">
+          <span id="refreshConfigStatus">Checking PriceCharting access…</span>
+          <strong id="refreshElapsed">Not started</strong>
+        </div>
+        <div id="datasetRefreshSteps" class="dataset-refresh-steps" aria-live="polite"></div>
+        <p id="datasetRefreshMessage" class="context-copy dataset-refresh-message">Ready to refresh.</p>
+        <section id="datasetPriceReport" class="dataset-price-report" aria-live="polite">
+          <h3>Compared to previous dataset</h3>
+          <p class="context-copy">Loading the comparison between the backup and current dataset…</p>
+        </section>
+        <details class="refresh-diagnostics">
+          <summary>Refresh diagnostics</summary>
+          <div class="refresh-diagnostics-toolbar">
+            <span>Errors and server responses stay here so they can be selected or copied.</span>
+            <button id="copyRefreshDiagnosticsBtn" class="button ghost small" type="button">Copy diagnostics</button>
+          </div>
+          <textarea id="refreshDiagnosticsLog" rows="10" readonly spellcheck="false" aria-label="Dataset refresh diagnostic log">No refresh diagnostics yet.</textarea>
+        </details>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Collection workspace</p>
+            <h2>Edit the card dataset</h2>
+            <p class="context-copy">Edit names and prices inline, select many cards, or delete an entire filtered group. Changes are saved locally in this browser.</p>
+          </div>
+          <div class="dataset-editor-actions">
+            <button id="downloadEditedDatasetBtn" class="button ghost" type="button">Download edited CSV</button>
+            <button id="restoreOriginalDatasetBtn" class="button danger" type="button">Restore original CSV</button>
+          </div>
+        </div>
+        <div class="weight-explainer">
+          <strong>Important:</strong> changing the dataset clears currently open simulation results. Saved suites remain available, but they will show a dataset-mismatch warning if reopened.
+        </div>
+        <section id="datasetEditorSummary" class="optimizer-summary dataset-editor-summary"></section>
+
+        <div class="dataset-editor-toolbar">
+          <label class="field">
+            <span>Find cards</span>
+            <input id="datasetEditorSearch" type="search" placeholder="Card name, set, or ID" />
+          </label>
+          <label class="field">
+            <span>Sort</span>
+            <select id="datasetEditorSort">
+              <option value="original">Original CSV order</option>
+              <option value="card">Card name A–Z</option>
+              <option value="raw-desc">Raw value high–low</option>
+              <option value="p10-desc">PSA 10 high–low</option>
+              <option value="modified">Modified cards first</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Rows per page</span>
+            <select id="datasetEditorPageSize">
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="250">250</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="dataset-batch-bar">
+          <strong id="datasetSelectedCount">0 selected</strong>
+          <button id="selectDatasetPageBtn" class="button ghost small" type="button">Select this page</button>
+          <button id="selectDatasetFilteredBtn" class="button ghost small" type="button">Select all filtered</button>
+          <button id="clearDatasetSelectionBtn" class="button ghost small" type="button">Clear selection</button>
+          <button id="deleteSelectedCardsBtn" class="button danger small" type="button" disabled>Delete selected cards</button>
+        </div>
+
+        <div class="table-scroll dataset-editor-table-scroll">
+          <table class="data-table dataset-editor-table">
+            <thead><tr>
+              <th><input id="datasetPageCheckbox" type="checkbox" aria-label="Select every card on this page" /></th>
+              <th>ID</th><th>Card</th><th>Set</th><th>Raw</th>
+              <th>PSA 7</th><th>PSA 8</th><th>PSA 9</th><th>PSA 10</th><th>Set Z-score</th>
+            </tr></thead>
+            <tbody id="datasetEditorRows"></tbody>
+          </table>
+        </div>
+
+        <div class="dataset-pagination">
+          <button id="datasetPrevPageBtn" class="button ghost small" type="button">← Previous</button>
+          <strong id="datasetPageStatus">Page 1</strong>
+          <button id="datasetNextPageBtn" class="button ghost small" type="button">Next →</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="detailView" class="view">
+      <section class="detail-toolbar panel">
+        <div>
+          <p class="kicker">Scenario detail</p>
+          <h2 id="detailTitle">Choose a scenario</h2>
+          <div id="detailWeights" class="scenario-mix-summary"></div>
+        </div>
+        <div class="toolbar-actions">
+          <label class="field">
+            <span>Scenario</span>
+            <select id="detailScenarioSelect"></select>
+          </label>
+          <label class="field small-field">
+            <span>Rerun size</span>
+            <select id="rerunCount">
+              <option value="1000">1,000</option>
+              <option value="10000">10,000</option>
+              <option value="100000">100,000</option>
+              <option value="1000000">1,000,000</option>
+            </select>
+          </label>
+          <button id="rerunScenarioBtn" class="button ghost" type="button">Rerun selected</button>
+        </div>
+      </section>
+
+      <section id="detailGuide" class="interpretation-guide" aria-label="How to read this scenario"></section>
+
+      <section id="detailMetrics" class="metric-grid"></section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Grading batch</p>
+            <h2 id="detailSelectionTitle">Cards selected for PSA</h2>
+            <p id="detailSelectionExplanation" class="context-copy"></p>
+          </div>
+          <button id="downloadDetailSelectionBtn" class="button ghost" type="button">Download selected cards</button>
+        </div>
+        <label class="field selected-search">
+          <span>Find a selected card</span>
+          <input id="detailSelectedCardSearch" type="search" placeholder="Card or set name" />
+        </label>
+        <div class="table-scroll selected-card-scroll">
+          <table class="data-table">
+            <thead><tr><th>Rank</th><th>Card</th><th>Expected added value</th><th>Raw value</th><th>PSA 7 after fee</th><th>PSA 8 after fee</th><th>PSA 9 after fee</th><th>PSA 10 after fee</th></tr></thead>
+            <tbody id="detailSelectedCardRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Select an outcome range</p>
+            <h2 class="heading-with-help">Profit distribution
+              <button type="button" class="help-tip" aria-label="Explain the profit distribution" data-tip="Every bar is a group of simulation runs with similar profit. Bright green bars are the range currently being analyzed below. Drag across bars to answer questions like: what caused outcomes around $600,000?">?</button>
+            </h2>
+            <p id="rangeDescription" class="context-copy">Drag across the chart or click a bar to inspect that part of the distribution.</p>
+          </div>
+          <label class="field target-field">
+            <span>Profit target</span>
+            <input id="detailProfitTarget" type="number" />
+          </label>
+        </div>
+        <div id="profitHistogram" class="chart histogram-chart" role="slider" tabindex="0" aria-label="Selectable profit histogram. Use the left and right arrow keys to move the selected range."></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Cards behind the selected range</p>
+            <h2 id="driverHeading" class="heading-with-help">Cards driving the selected profit range
+              <button type="button" class="help-tip" aria-label="Explain card drivers" data-tip="This is not automatically the best or median outcome. It always refers to the bright-green range you selected in the histogram. Cards are ranked by their average sale contribution inside those runs.">?</button>
+            </h2>
+            <p id="driverContext" class="context-copy"></p>
+          </div>
+        </div>
+        <div id="driverChart" class="card-bar-chart" role="img" aria-label="Largest card contributions in the selected profit range"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading compact-heading">
+          <div>
+            <p class="kicker">Simple explanation</p>
+            <h2 class="heading-with-help">What does this profit range mean?
+              <button type="button" class="help-tip" aria-label="Explain this section" data-tip="Everything here describes only the bright-green bars you selected above. It tells you how common that profit was, whether it needed lucky grades, and which cards produced the money.">?</button>
+            </h2>
+          </div>
+        </div>
+        <div id="conditionalMetrics" class="visual-requirements"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">When inspecting the binder</p>
+            <h2 class="heading-with-help">Inspection priorities
+              <button type="button" class="help-tip" aria-label="Explain inspection priorities" data-tip="This section ignores the selected range and asks a different question: which cards matter most when chasing the best 10% of profit outcomes? Upper-right dots deserve the closest condition inspection.">?</button>
+            </h2>
+            <p class="context-copy">Only strong chase-card outliers (set Z-score ≥ 3) appear here. Start with large bubbles in the upper-right: they are more unusual within their set, have more PSA 10 upside, and appear as PSA 10 unusually often in the best 10% of runs.</p>
+          </div>
+        </div>
+        <div id="priorityChart" class="priority-chart" role="img" aria-label="Inspection priority plot of PSA 10 upside versus association with top-profit runs"></div>
+        <div class="table-scroll">
+          <table class="data-table card-table">
+            <thead><tr>
+              <th>Priority</th><th>Card</th><th>Set Z-score</th><th>PSA 9</th><th>PSA 10</th><th>Upside</th>
+              <th><span class="header-with-help">PSA 10 rate in best 10% of runs <button type="button" class="help-tip" aria-label="Explain PSA 10 rate in best runs" data-tip="Among only the highest-profit 10% of simulations, this is how often the card received PSA 10. A high number means the best outcomes often depended on this card grading perfectly.">?</button></span></th>
+              <th><span class="header-with-help">More common than normal <button type="button" class="help-tip" aria-label="Explain more common than normal" data-tip="This compares the card’s PSA 10 rate in the best runs with the scenario’s normal PSA 10 probability. For example, 2× means PSA 10 was twice as common in the best runs.">?</button></span></th>
+            </tr></thead>
+            <tbody id="priorityRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <p class="detail-note">Every probability on this page is conditional on the selected scenario. Presets are assumptions, not assigned real-world likelihoods.</p>
+    </section>
+
+    <aside class="saved-bar panel">
+      <div>
+        <p class="kicker">Saved locally</p>
+        <select id="savedSuiteSelect"><option value="">Saved suites…</option></select>
+      </div>
+      <button id="loadSuiteBtn" class="button ghost small" type="button">Open</button>
+      <button id="renameSuiteBtn" class="button ghost small" type="button">Rename</button>
+      <button id="deleteSuiteBtn" class="button ghost small" type="button">Delete</button>
+      <button id="exportSuiteBtn" class="button ghost small" type="button">Export</button>
+      <label class="button ghost small">Import<input id="importSuiteInput" type="file" accept=".json,.gz,application/json,application/gzip" hidden /></label>
+    </aside>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </main>
+  <script>
+    (() => {
+      const showStartupProblem = (title, detail) => {
+        const status = document.getElementById("csvStatus");
+        const description = document.getElementById("csvDetail");
+        if (status) status.textContent = title;
+        if (description) description.textContent = detail;
+      };
+
+      if (window.location.protocol === "file:") {
+        window.addEventListener("DOMContentLoaded", () => {
+          showStartupProblem(
+            "Local server required",
+            "Double-click start.command, then use the page it opens."
+          );
+        });
+        return;
+      }
+
+      window.addEventListener("error", () => {
+        if (!document.documentElement.dataset.appStarted) {
+          showStartupProblem(
+            "App failed to start",
+            "Open this folder through http://localhost:8000 instead of double-clicking index.html."
+          );
+        }
+      });
+
+      window.setTimeout(() => {
+        if (!document.documentElement.dataset.appStarted) {
+          showStartupProblem(
+            "App failed to start",
+            "Double-click start.command and use the browser page it opens."
+          );
+        }
+      }, 3000);
+    })();
+  </script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
