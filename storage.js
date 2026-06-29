@@ -1,7 +1,8 @@
 const DATABASE_NAME = "pokemon-monte-carlo";
 const SUITE_STORE_NAME = "suites";
 const DATASET_STORE_NAME = "datasets";
-const DATABASE_VERSION = 2;
+const PORTFOLIO_STORE_NAME = "portfolios";
+const DATABASE_VERSION = 3;
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
@@ -13,6 +14,9 @@ function openDatabase() {
       }
       if (!database.objectStoreNames.contains(DATASET_STORE_NAME)) {
         database.createObjectStore(DATASET_STORE_NAME, { keyPath: "id" });
+      }
+      if (!database.objectStoreNames.contains(PORTFOLIO_STORE_NAME)) {
+        database.createObjectStore(PORTFOLIO_STORE_NAME, { keyPath: "id" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -74,6 +78,18 @@ export function getDatasetDraft() {
 export function deleteDatasetDraft() {
   return withStore(DATASET_STORE_NAME, "readwrite", (store) =>
     store.delete("active")
+  );
+}
+
+export function savePortfolio(portfolio) {
+  return withStore(PORTFOLIO_STORE_NAME, "readwrite", (store) =>
+    store.put({ ...portfolio, id: "active" })
+  );
+}
+
+export function getPortfolio() {
+  return withStore(PORTFOLIO_STORE_NAME, "readonly", (store) =>
+    store.get("active")
   );
 }
 

@@ -13,14 +13,28 @@ import {
   deleteDatasetDraft,
   deleteSuite,
   getDatasetDraft,
+  getPortfolio,
   getSuite,
   listSuites,
   saveDatasetDraft,
+  savePortfolio,
   saveSuite,
   suiteFromFile,
   suiteToBlob,
   validateSuite
 } from "./storage.js";
+import {
+  CARD_STATUSES,
+  applyPortfolioToCards,
+  batchAlignment,
+  emptyPortfolio,
+  isCommittedGradingCard,
+  isFutureGradingCandidate,
+  isRawSoldCard,
+  normalizeCardRecord,
+  normalizePortfolio,
+  portfolioSummary
+} from "./portfolio-core.js";
 import {
   afterNjTaxProfit,
   buildSalePlan
@@ -63,6 +77,12 @@ const state = {
   auditScenarioId: "",
   auditCacheRevision: -1,
   auditRecords: [],
+  portfolio: emptyPortfolio(),
+  portfolioSelectedIds: new Set(),
+  portfolioPage: 1,
+  portfolioPageSize: 100,
+  portfolioScenarioId: "",
+  portfolioActiveBatchId: "",
   scenarios: PRESETS.map(([name, p7, p8, p9, p10], index) => ({
     id: `preset-${index + 1}`,
     name,
@@ -294,6 +314,7 @@ async function acceptCsv(text, name) {
   el("csvStatus").closest(".data-status").classList.add("loaded");
   updateCollectionSummary();
   renderDatasetEditor();
+  renderPortfolio();
 }
 
 async function loadDefaultCsv() {
@@ -1121,15 +1142,80 @@ function includeFirstEditions() {
   return mode === "include";
 }
 
+function liveModeEnabled() {
+  return el("analysisMode")?.value === "live";
+}
+
+function modeledCards() {
+  return applyPortfolioToCards(
+    state.cards,
+    state.portfolio,
+    liveModeEnabled()
+  );
+}
+
 function poolsForScenario(scenario, cardCount) {
-  return selectTopCardsByExpectedAddedValue(state.cards, {
-    includeFirstEditions: includeFirstEditions(),
-    cardCount,
-    config: currentConfig(),
-    weights: scenario.weights,
-    allowChasePsa10: scenario.allowChasePsa10 !== false,
-    laborCost: 0
-  });
+  const cards = modeledCards();
+  if (!liveModeEnabled()) {
+    return selectTopCardsByExpectedAddedValue(cards, {
+      includeFirstEditions: includeFirstEditions(),
+      cardCount,
+      config: currentConfig(),
+      weights: scenario.weights,
+      allowChasePsa10: scenario.allowChasePsa10 !== false,
+      laborCost: 0
+    });
+  }
+  const eligible = cards.filter(
+    (card) => includeFirstEditions() || !isFirstEdition(card)
+  );
+  const committed = eligible.filter(isCommittedGradingCard);
+  const rawSold = eligible.filter(isRawSoldCard);
+  const candidates = eligible.filter(isFutureGradingCandidate);
+  const ranking = rankCardsByExpectedAddedValue(
+    candidates,
+    currentConfig(),
+    scenario.weights,
+    scenario.allowChasePsa10 !== false,
+    0
+  );
+  const selectedRecords = ranking.slice(
+    0,
+    Math.max(0, Math.min(ranking.length, Math.floor(Number(cardCount) || 0)))
+  );
+  const selectedIds = new Set(
+    selectedRecords.map((record) => String(record.card.id))
+  );
+  const grading = [
+    ...committed,
+    ...selectedRecords.map((record) => record.card)
+  ];
+  const rawValue = candidates.reduce(
+    (sum, card) => sum + (selectedIds.has(String(card.id)) ? 0 : card.raw),
+    0
+  ) + rawSold.reduce(
+    (sum, card) => sum + (Number(card.actualSalePrice) || 0),
+    0
+  );
+  return {
+    eligible,
+    grading,
+    raw: candidates.filter((card) => !selectedIds.has(String(card.id))),
+    rawValue,
+    excludedFirstEditions: cards.length - eligible.length,
+    committedCount: committed.length,
+    futureCount: selectedRecords.length,
+    selectionRecords: [
+      ...committed.map((card) => ({
+        card,
+        rank: 0,
+        expectedAddedValue: null,
+        committed: true
+      })),
+      ...selectedRecords
+    ],
+    ranking
+  };
 }
 
 function currentConfig() {
@@ -1140,6 +1226,7 @@ function currentConfig() {
     volatilityPct: numberValue("volatilityPct"),
     profitTarget: numberValue("profitTarget"),
     includeFirstEditions: includeFirstEditions(),
+    analysisMode: el("analysisMode")?.value || "acquisition",
     fees: {
       fee1500: numberValue("fee1500"),
       fee2500: numberValue("fee2500"),
@@ -1158,6 +1245,9 @@ function applyConfig(config) {
   el("profitTarget").value = config.profitTarget;
   el("detailProfitTarget").value = config.profitTarget;
   el("firstEditionMode").value = config.includeFirstEditions ? "include" : "exclude";
+  if (el("analysisMode")) {
+    el("analysisMode").value = config.analysisMode === "live" ? "live" : "acquisition";
+  }
   Object.entries(config.fees).forEach(([key, value]) => {
     if (el(key)) el(key).value = value;
   });
@@ -1166,8 +1256,12 @@ function applyConfig(config) {
 function updateCollectionSummary() {
   if (!state.cards.length) return;
   const eligible = optimizerEligibleCards();
+  const summary = portfolioSummary(state.cards, state.portfolio);
+  const modeCopy = liveModeEnabled()
+    ? `live from today · ${summary.counts.submitted + summary.counts.graded} at PSA/graded · ${summary.counts.sold} sold`
+    : "pre-purchase assumptions";
   el("collectionSummary").textContent =
-    `${eligible.length.toLocaleString()} eligible cards · automatic sweet-spot batches of 50 · ` +
+    `${eligible.length.toLocaleString()} eligible cards · ${modeCopy} · automatic sweet-spot batches of 50 · ` +
     `${(state.cards.length - eligible.length).toLocaleString()} first-edition rows excluded`;
   updateScenarioSelectionCounts();
   updateWorkEstimate();
@@ -1219,6 +1313,7 @@ function renderScenarioRows() {
   updateScenarioSelectionCounts();
   updateWorkEstimate();
   refreshOptimizerScenarioSelect();
+  renderPortfolio();
 }
 
 function updateScenarioSelectionCounts() {
@@ -1399,16 +1494,22 @@ async function runSuite() {
           );
           result.cards = pool.grading;
           result.rawValue = pool.rawValue;
+          result.committedCardCount = pool.committedCount || 0;
+          result.futureCardCount = pool.futureCount ?? pool.grading.length;
+          result.analysisMode = config.analysisMode;
           result.selectionOptimization = {
             frontierStep: 50,
             sweetSpot: optimization.sweetSpot,
             bestFrontier: optimization.bestFrontier,
             baseProfit: optimization.baseProfit,
-            frontier: optimization.frontier
+            frontier: optimization.frontier,
+            ranking: optimization.ranking,
+            committedGradingCount: optimization.committedGradingCount || 0
           };
           result.selectionDetails = pool.selectionRecords.map((record) => ({
             rank: record.rank,
-            expectedAddedValue: record.expectedAddedValue
+            expectedAddedValue: record.expectedAddedValue,
+            committed: Boolean(record.committed)
           }));
           results[index] = result;
           progresses[index] = 1;
@@ -1548,7 +1649,9 @@ function renderSummaryTable() {
     const summary = result.summary;
     return `<tr class="clickable" data-scenario-id="${escapeHtml(result.scenarioId)}">
       <td><strong>${escapeHtml(result.name)}</strong><br><span class="effective-mix">${effectiveMix(result.weights)} · chase 10 ${result.allowChasePsa10 === false ? "off" : "on"} · ${result.selectionOptimization ? "automatic ranked sweet spot" : "saved batch"}</span></td>
-      <td>${result.cardCount.toLocaleString()}</td>
+      <td>${result.analysisMode === "live"
+        ? `${Number(result.futureCardCount || 0).toLocaleString()} next + ${Number(result.committedCardCount || 0).toLocaleString()} committed`
+        : result.cardCount.toLocaleString()}</td>
       <td class="${summary.p5 >= 0 ? "positive" : "negative"}">${money(summary.p5)}</td>
       <td>${money(summary.median)}</td>
       <td>${money(summary.mean)}</td>
@@ -1587,7 +1690,7 @@ function refreshOptimizerScenarioSelect() {
 
 function optimizerEligibleCards() {
   const include = includeFirstEditions();
-  return state.cards.filter((card) => include || !isFirstEdition(card));
+  return modeledCards().filter((card) => include || !isFirstEdition(card));
 }
 
 function updateOptimizerWorkEstimate() {
@@ -1601,7 +1704,7 @@ function updateOptimizerWorkEstimate() {
   }
   const outcomes = cards * simulations * scenarioCount;
   el("optimizerWorkEstimate").textContent =
-    `${scenarioCount} scenario${scenarioCount === 1 ? "" : "s"} × ${cards.toLocaleString()} cards × ${simulations.toLocaleString()} runs · ` +
+    `${scenarioCount} scenario${scenarioCount === 1 ? "" : "s"} × ${cards.toLocaleString()} portfolio cards × ${simulations.toLocaleString()} runs · ` +
     `${new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(outcomes)} card outcomes · ` +
     `ranked frontiers compared on one common chart`;
 }
@@ -1695,7 +1798,7 @@ function optimizerSeriesChart(containerId, series, globalRange = null) {
     <line class="optimizer-axis" x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" />
     ${xTicks.map((value) => `<text class="optimizer-tick" x="${x(value)}" y="${height - margin.bottom + 23}" text-anchor="middle">${Math.round(value).toLocaleString()}</text>`).join("")}
     ${yTicks.map((value) => `<text class="optimizer-tick" x="${margin.left - 12}" y="${y(value) + 4}" text-anchor="end">${money(value, true)}</text>`).join("")}
-    <text class="optimizer-axis-label" x="${margin.left + plotWidth / 2}" y="${height - 13}" text-anchor="middle">Cards sent to PSA →</text>
+    <text class="optimizer-axis-label" x="${margin.left + plotWidth / 2}" y="${height - 13}" text-anchor="middle">${liveModeEnabled() ? "Additional cards sent to PSA →" : "Cards sent to PSA →"}</text>
     <text class="optimizer-axis-label" transform="translate(18 ${margin.top + plotHeight / 2}) rotate(-90)" text-anchor="middle">Portfolio profit</text>
   </svg>`;
 }
@@ -1799,7 +1902,7 @@ function renderOptimizerResults() {
   el("optimizerSummary").innerHTML = globalSummary + state.optimizerResults.map((result, index) => `
     <article class="metric-card" style="border-color:${OPTIMIZER_COLORS[index % OPTIMIZER_COLORS.length]}55">
       <span>${escapeHtml(result.scenarioName)} sweet spot</span>
-      <strong style="color:${OPTIMIZER_COLORS[index % OPTIMIZER_COLORS.length]}">${result.sweetSpot.cardCount.toLocaleString()} cards</strong>
+      <strong style="color:${OPTIMIZER_COLORS[index % OPTIMIZER_COLORS.length]}">${result.sweetSpot.cardCount.toLocaleString()} ${liveModeEnabled() ? "additional " : ""}cards</strong>
       <small>Median ${money(result.sweetSpot.median)} · P5 ${money(result.sweetSpot.p5)} · P95 ${money(result.sweetSpot.p95)}</small>
     </article>
   `).join("");
@@ -1847,7 +1950,8 @@ function renderActiveOptimizerResult() {
     ? 100
     : (sweet.median - result.baseProfit) / (best.median - result.baseProfit) * 100;
   el("frontierExplanation").innerHTML =
-    `<strong>${escapeHtml(result.scenarioName)}:</strong> grade the first <strong>${sweet.cardCount.toLocaleString()} cards</strong> in this scenario’s ranked list. ` +
+    `<strong>${escapeHtml(result.scenarioName)}:</strong> grade the first <strong>${sweet.cardCount.toLocaleString()} ${liveModeEnabled() ? "additional " : ""}cards</strong> in this scenario’s ranked list. ` +
+    `${result.committedGradingCount ? `${result.committedGradingCount.toLocaleString()} already-committed cards are included at the chart’s starting point. ` : ""}` +
     `That batch retained ${Math.max(0, improvementKept).toFixed(1)}% of the best median-profit improvement found, while avoiding ${cardsAvoided.toLocaleString()} lower-value grading submissions. ` +
     `Switch “Ranking scenario” below to inspect another colored line.`;
   el("optimizerBatchSlider").max = result.ranking.length;
@@ -2039,7 +2143,9 @@ function salePlannerSources() {
   (state.activeSuite?.results || []).forEach((result) => {
     const optimization = result.selectionOptimization;
     if (seen.has(result.scenarioId) || !optimization?.frontier?.length) return;
-    const ranking = optimizerRankingFromSuiteResult(result);
+    const ranking = optimization.ranking?.length
+      ? optimization.ranking
+      : optimizerRankingFromSuiteResult(result);
     if (!ranking.length) return;
     sources.push({
       scenarioId: result.scenarioId,
@@ -2328,6 +2434,347 @@ function downloadSalePlan() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+async function loadPortfolio() {
+  try {
+    state.portfolio = normalizePortfolio(await getPortfolio());
+  } catch {
+    state.portfolio = emptyPortfolio();
+  }
+}
+
+function portfolioRecord(cardId, create = false) {
+  const id = String(cardId);
+  let record = state.portfolio.records[id];
+  if (!record && create) {
+    record = normalizeCardRecord();
+    state.portfolio.records[id] = record;
+  }
+  return record;
+}
+
+function invalidateResultsAfterPortfolioEdit() {
+  if (!liveModeEnabled()) return;
+  invalidateResultsAfterDatasetEdit();
+}
+
+function persistPortfolioChange(message = "") {
+  state.portfolio.updatedAt = new Date().toISOString();
+  invalidateResultsAfterPortfolioEdit();
+  clearTimeout(persistPortfolioChange.timeout);
+  persistPortfolioChange.timeout = setTimeout(() => {
+    savePortfolio(state.portfolio).catch(() =>
+      toast("Portfolio changed, but local storage was unavailable.")
+    );
+  }, 250);
+  renderPortfolio();
+  updateCollectionSummary();
+  if (message) toast(message);
+}
+
+function portfolioScenario() {
+  return state.scenarios.find(
+    (scenario) => scenario.id === state.portfolioScenarioId
+  ) || state.scenarios.find((scenario) => scenario.enabled) || state.scenarios[0];
+}
+
+function portfolioRanking() {
+  const scenario = portfolioScenario();
+  if (!scenario) return [];
+  const cards = applyPortfolioToCards(state.cards, state.portfolio, true)
+    .filter((card) =>
+      (includeFirstEditions() || !isFirstEdition(card)) &&
+      isFutureGradingCandidate(card)
+    );
+  return rankCardsByExpectedAddedValue(
+    cards,
+    currentConfig(),
+    scenario.weights,
+    scenario.allowChasePsa10 !== false,
+    Math.max(0, numberValue("optimizerLaborCost"))
+  ).map((record) => ({
+    id: record.card.id,
+    card: record.card.card,
+    set: record.card.set,
+    expectedIncrement: record.expectedAddedValue,
+    rank: record.rank
+  }));
+}
+
+function portfolioTableData(ranking = portfolioRanking()) {
+  const query = el("portfolioSearch").value.trim().toLowerCase();
+  const status = el("portfolioStatusFilter").value;
+  const batchId = el("portfolioBatchFilter").value;
+  const rankById = new Map(ranking.map((record) => [String(record.id), record]));
+  const filtered = state.cards.filter((card) => {
+    const record = normalizeCardRecord(portfolioRecord(card.id) || {});
+    return (!query || `${card.card} ${card.set} ${card.id}`.toLowerCase().includes(query)) &&
+      (!status || record.status === status) &&
+      (!batchId || record.batchId === batchId);
+  }).sort((a, b) => {
+    const aTracked = portfolioRecord(a.id) ? 0 : 1;
+    const bTracked = portfolioRecord(b.id) ? 0 : 1;
+    if (aTracked !== bTracked) return aTracked - bTracked;
+    const aRank = rankById.get(String(a.id))?.rank ?? Number.MAX_SAFE_INTEGER;
+    const bRank = rankById.get(String(b.id))?.rank ?? Number.MAX_SAFE_INTEGER;
+    return aRank - bRank || a.card.localeCompare(b.card);
+  });
+  const pageSize = Number(el("portfolioPageSize").value) || 100;
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  state.portfolioPage = clamp(state.portfolioPage, 1, pageCount);
+  const start = (state.portfolioPage - 1) * pageSize;
+  return {
+    filtered,
+    pageRows: filtered.slice(start, start + pageSize),
+    pageSize,
+    pageCount,
+    start,
+    rankById
+  };
+}
+
+function batchCardIds(batchId) {
+  return Object.entries(state.portfolio.records)
+    .filter(([, record]) => record.batchId === batchId)
+    .map(([cardId]) => cardId);
+}
+
+function renderPortfolioBatches(ranking) {
+  const batches = state.portfolio.batches;
+  el("portfolioBatchRows").innerHTML = batches.length
+    ? batches.map((batch) => {
+        const ids = batchCardIds(batch.id);
+        const records = ids.map((id) => normalizeCardRecord(state.portfolio.records[id]));
+        const grades = records
+          .map((record) => record.actualGrade)
+          .filter((grade) => grade !== null);
+        const soldGross = records.reduce(
+          (sum, record) => sum + (record.actualSalePrice || 0),
+          0
+        );
+        const alignment = batch.status === "draft"
+          ? batchAlignment(ids, ranking)
+          : null;
+        return `<tr>
+          <td><strong>${escapeHtml(batch.name)}</strong><br><span class="context-copy">${batch.status === "draft" ? "Draft / not sent" : batch.status === "submitted" ? "Sent to PSA" : "Closed"}</span></td>
+          <td>${ids.length.toLocaleString()}</td>
+          <td>${grades.length ? `${grades.length.toLocaleString()} back · avg ${(grades.reduce((sum, grade) => sum + grade, 0) / grades.length).toFixed(2)}` : "—"}</td>
+          <td>${soldGross ? money(soldGross) : "—"}</td>
+          <td>${alignment ? `${alignment.alignedCount}/${alignment.batchSize} ideal${alignment.negativeCount ? ` · ${alignment.negativeCount} negative EV` : ""}` : "Committed"}</td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="5" class="context-copy">No batches yet. Create a draft here or save a selected optimizer batch.</td></tr>`;
+
+  const options = batches.map((batch) =>
+    `<option value="${escapeHtml(batch.id)}">${escapeHtml(batch.name)} · ${batch.status}</option>`
+  ).join("");
+  ["portfolioActiveBatch", "portfolioBatchFilter"].forEach((id) => {
+    const node = el(id);
+    const previous = id === "portfolioActiveBatch"
+      ? state.portfolioActiveBatchId
+      : node.value;
+    node.innerHTML = id === "portfolioBatchFilter"
+      ? `<option value="">All batches</option>${options}`
+      : `<option value="">Choose a batch…</option>${options}`;
+    if ([...node.options].some((option) => option.value === previous)) {
+      node.value = previous;
+    }
+  });
+  if (
+    !state.portfolio.batches.some(
+      (batch) => batch.id === state.portfolioActiveBatchId
+    )
+  ) {
+    state.portfolioActiveBatchId =
+      state.portfolio.batches.find((batch) => batch.status === "draft")?.id ||
+      state.portfolio.batches[0]?.id ||
+      "";
+  }
+  el("portfolioActiveBatch").value = state.portfolioActiveBatchId;
+}
+
+function renderPortfolioStrategy(ranking) {
+  const batch = state.portfolio.batches.find(
+    (item) => item.id === state.portfolioActiveBatchId
+  );
+  el("markBatchSubmittedBtn").disabled = !batch || batch.status !== "draft";
+  el("deleteDraftBatchBtn").disabled = !batch || batch.status !== "draft";
+  el("addSelectedToBatchBtn").disabled =
+    !batch || batch.status !== "draft" || !state.portfolioSelectedIds.size;
+  if (!batch) {
+    el("portfolioStrategy").innerHTML =
+      `<strong>Choose or create a draft batch.</strong> Its cards will be compared with the highest-EV same-sized batch under the selected scenario.`;
+    return;
+  }
+  const alignment = batchAlignment(batchCardIds(batch.id), ranking);
+  const missed = alignment.missed.slice(0, 3);
+  el("portfolioStrategy").innerHTML = batch.status !== "draft"
+    ? `<strong>${escapeHtml(batch.name)} is committed.</strong> Its uncertain cards are now included at the live model’s x=0; actual grades replace those uncertainties as you enter them.`
+    : alignment.batchSize
+      ? `<strong>${alignment.alignedCount.toLocaleString()} of ${alignment.batchSize.toLocaleString()} cards match the ideal same-sized batch (${percent(alignment.alignmentRate)}).</strong> ` +
+        `${alignment.negativeCount ? `<span class="warn">${alignment.negativeCount.toLocaleString()} selected card${alignment.negativeCount === 1 ? " has" : "s have"} negative expected added value.</span> ` : ""}` +
+        `${missed.length ? `Highest-ranked omissions: ${missed.map((record) => `${escapeHtml(record.card)} (${record.expectedIncrement >= 0 ? "+" : ""}${money(record.expectedIncrement)})`).join(", ")}.` : "The draft matches the current ranking."}`
+      : `<strong>${escapeHtml(batch.name)} is empty.</strong> Select cards below or save the current optimizer selection into a batch.`;
+}
+
+function renderPortfolio() {
+  if (!el("portfolioView") || !state.cards.length) return;
+  if (!state.scenarios.some((scenario) => scenario.id === state.portfolioScenarioId)) {
+    state.portfolioScenarioId =
+      state.scenarios.find((scenario) => scenario.enabled)?.id ||
+      state.scenarios[0]?.id ||
+      "";
+  }
+  el("portfolioScenario").innerHTML = state.scenarios.map((scenario) =>
+    `<option value="${escapeHtml(scenario.id)}">${escapeHtml(scenario.name)} · ${effectiveMix(scenario.weights)}</option>`
+  ).join("");
+  el("portfolioScenario").value = state.portfolioScenarioId;
+  const summary = portfolioSummary(state.cards, state.portfolio);
+  el("portfolioMetrics").innerHTML = `
+    <article class="metric-card"><span>Inventory</span><strong>${summary.counts.inventory.toLocaleString()}</strong><small>Not in a batch</small></article>
+    <article class="metric-card"><span>Next batches</span><strong>${summary.counts.planned.toLocaleString()}</strong><small>Draft decisions</small></article>
+    <article class="metric-card"><span>At PSA</span><strong>${summary.counts.submitted.toLocaleString()}</strong><small>Uncertain but committed</small></article>
+    <article class="metric-card"><span>Grades back</span><strong>${summary.counts.graded.toLocaleString()}</strong><small>Deterministic grades</small></article>
+    <article class="metric-card"><span>Sold</span><strong>${summary.counts.sold.toLocaleString()}</strong><small>${money(summary.realizedGross)} actual gross</small></article>`;
+  const ranking = portfolioRanking();
+  renderPortfolioBatches(ranking);
+  renderPortfolioStrategy(ranking);
+  const { filtered, pageRows, pageCount, start, rankById } = portfolioTableData(ranking);
+  el("portfolioRows").innerHTML = pageRows.map((card) => {
+    const record = normalizeCardRecord(portfolioRecord(card.id) || {});
+    const rank = rankById.get(String(card.id));
+    const committed = record.status === "submitted" ||
+      record.status === "graded" ||
+      record.status === "sold";
+    return `<tr data-portfolio-card-id="${escapeHtml(card.id)}">
+      <td><input type="checkbox" data-portfolio-select ${state.portfolioSelectedIds.has(String(card.id)) ? "checked" : ""} aria-label="Select ${escapeHtml(card.card)}" /></td>
+      <td><strong>${escapeHtml(card.card)}</strong><br><span class="context-copy">${escapeHtml(card.set)} · ID ${escapeHtml(card.id)}</span></td>
+      <td>${committed ? `<span class="status-pill">Committed</span>` : rank ? `#${rank.rank.toLocaleString()}<br><span class="${rank.expectedIncrement >= 0 ? "positive" : "negative"}">${rank.expectedIncrement >= 0 ? "+" : ""}${money(rank.expectedIncrement)}</span>` : "—"}</td>
+      <td><select data-portfolio-field="status">${CARD_STATUSES.map(([value, label]) => `<option value="${value}" ${record.status === value ? "selected" : ""}>${label}</option>`).join("")}</select></td>
+      <td><select data-portfolio-field="batchId"><option value="">No batch</option>${state.portfolio.batches.map((batch) => `<option value="${escapeHtml(batch.id)}" ${record.batchId === batch.id ? "selected" : ""}>${escapeHtml(batch.name)}</option>`).join("")}</select></td>
+      <td><select data-portfolio-field="estimatedGrade"><option value="">Scenario mix</option>${[7, 8, 9, 10].map((grade) => `<option value="${grade}" ${record.estimatedGrade === grade ? "selected" : ""}>PSA ${grade}</option>`).join("")}</select></td>
+      <td><input data-portfolio-field="estimateConfidence" type="number" min="1" max="100" value="${record.estimateConfidence ?? 70}" ${record.estimatedGrade === null ? "disabled" : ""} aria-label="Estimate confidence percent" /></td>
+      <td><select data-portfolio-field="actualGrade"><option value="">Waiting</option>${[7, 8, 9, 10].map((grade) => `<option value="${grade}" ${record.actualGrade === grade ? "selected" : ""}>PSA ${grade}</option>`).join("")}</select></td>
+      <td><input data-portfolio-field="actualSalePrice" type="number" min="0" step="0.01" value="${record.actualSalePrice ?? ""}" placeholder="Gross $" aria-label="Actual gross sale price" /></td>
+      <td><div class="row-actions"><button class="button ghost small save-portfolio-row" type="button">Save</button><button class="button ghost small reset-portfolio-row" type="button">Reset</button></div></td>
+    </tr>`;
+  }).join("");
+  el("portfolioPageStatus").textContent =
+    `${filtered.length ? `${(start + 1).toLocaleString()}–${Math.min(filtered.length, start + pageRows.length).toLocaleString()}` : "0"} of ${filtered.length.toLocaleString()} cards · page ${state.portfolioPage.toLocaleString()} of ${pageCount.toLocaleString()}`;
+  el("portfolioPrevBtn").disabled = state.portfolioPage <= 1;
+  el("portfolioNextBtn").disabled = state.portfolioPage >= pageCount;
+  el("portfolioSelectedCount").textContent =
+    `${state.portfolioSelectedIds.size.toLocaleString()} selected`;
+}
+
+function createPortfolioBatch(name, cardIds = []) {
+  const cleanName = String(name || "").trim();
+  if (!cleanName) return toast("Enter a batch name first.");
+  const batch = {
+    id: uid(),
+    name: cleanName,
+    status: "draft",
+    createdAt: new Date().toISOString(),
+    submittedAt: null
+  };
+  state.portfolio.batches.push(batch);
+  state.portfolioActiveBatchId = batch.id;
+  cardIds.forEach((cardId) => {
+    const record = portfolioRecord(cardId, true);
+    if (record.status === "inventory" || record.status === "planned") {
+      record.status = "planned";
+      record.batchId = batch.id;
+    }
+  });
+  persistPortfolioChange(`${cleanName} created with ${cardIds.length.toLocaleString()} cards.`);
+  return batch;
+}
+
+function saveOptimizerSelectionAsBatch() {
+  const result = activeOptimizerResult();
+  if (!result || !state.optimizerBatchSize) {
+    return toast("Choose at least one optimizer card first.");
+  }
+  const name = `${result.scenarioName} · ${state.optimizerBatchSize} cards · ${new Date().toLocaleDateString()}`;
+  createPortfolioBatch(
+    name,
+    result.ranking.slice(0, state.optimizerBatchSize).map((record) => record.id)
+  );
+}
+
+function markActiveBatchSubmitted() {
+  const batch = state.portfolio.batches.find(
+    (item) => item.id === state.portfolioActiveBatchId
+  );
+  if (!batch || batch.status !== "draft") return;
+  batch.status = "submitted";
+  batch.submittedAt = new Date().toISOString();
+  batchCardIds(batch.id).forEach((cardId) => {
+    const record = portfolioRecord(cardId, true);
+    if (record.status === "planned" || record.status === "inventory") {
+      record.status = "submitted";
+    }
+  });
+  persistPortfolioChange(`${batch.name} is now committed at PSA.`);
+}
+
+function deleteActiveDraftBatch() {
+  const batchIndex = state.portfolio.batches.findIndex(
+    (item) => item.id === state.portfolioActiveBatchId
+  );
+  const batch = state.portfolio.batches[batchIndex];
+  if (!batch || batch.status !== "draft") return;
+  batchCardIds(batch.id).forEach((cardId) => {
+    const record = portfolioRecord(cardId, true);
+    record.batchId = null;
+    if (record.status === "planned") record.status = "inventory";
+    state.portfolio.records[cardId] = normalizeCardRecord(record);
+  });
+  state.portfolio.batches.splice(batchIndex, 1);
+  state.portfolioActiveBatchId = "";
+  persistPortfolioChange(`${batch.name} deleted.`);
+}
+
+function updatePortfolioCard(row, input) {
+  const record = portfolioRecord(row.dataset.portfolioCardId, true);
+  const field = input.dataset.portfolioField;
+  if (field === "estimatedGrade" || field === "actualGrade") {
+    record[field] = input.value ? Number(input.value) : null;
+  } else if (field === "estimateConfidence") {
+    record[field] = clamp(Number(input.value) || 70, 1, 100);
+  } else if (field === "actualSalePrice") {
+    record[field] = input.value === "" ? null : Math.max(0, Number(input.value) || 0);
+  } else {
+    record[field] = input.value || (field === "batchId" ? null : "inventory");
+  }
+  if (field === "batchId" && record.batchId) {
+    const batch = state.portfolio.batches.find((item) => item.id === record.batchId);
+    if (record.status === "inventory" || record.status === "planned") {
+      record.status = batch?.status === "draft" ? "planned" : "submitted";
+    }
+  }
+  if (field === "actualGrade" && record.actualGrade !== null) record.status = "graded";
+  if (field === "actualSalePrice" && record.actualSalePrice !== null) record.status = "sold";
+  state.portfolio.records[row.dataset.portfolioCardId] = normalizeCardRecord(record);
+  persistPortfolioChange();
+}
+
+function savePortfolioRow(row) {
+  const value = (field) =>
+    row.querySelector(`[data-portfolio-field="${field}"]`)?.value ?? "";
+  const record = normalizeCardRecord({
+    status: value("status"),
+    batchId: value("batchId") || null,
+    estimatedGrade: value("estimatedGrade") ? Number(value("estimatedGrade")) : null,
+    estimateConfidence: Number(value("estimateConfidence")) || 70,
+    actualGrade: value("actualGrade") ? Number(value("actualGrade")) : null,
+    actualSalePrice: value("actualSalePrice") === ""
+      ? null
+      : Math.max(0, Number(value("actualSalePrice")) || 0)
+  });
+  state.portfolio.records[row.dataset.portfolioCardId] = record;
+  persistPortfolioChange("Card record saved.");
+}
+
 function switchView(view) {
   document.querySelectorAll(".view").forEach((node) => node.classList.toggle("active", node.id === `${view}View`));
   document.querySelectorAll(".tab").forEach((node) => node.classList.toggle("active", node.dataset.view === view));
@@ -2337,6 +2784,7 @@ function switchView(view) {
     updateOptimizerWorkEstimate();
   }
   if (view === "salePlanner") refreshSalePlanner();
+  if (view === "portfolio") renderPortfolio();
   if (view === "priceAudit") renderPriceAudit();
   if (view === "datasetEditor") renderDatasetEditor();
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -2373,6 +2821,7 @@ function renderDetail() {
     <div class="scenario-mix-ledger">
       ${gradeLedgerMarkup(scenarioMix)}
       <span class="simulation-ledger">${result.allowChasePsa10 === false ? "Chase-card PSA 10 blocked" : "Chase-card PSA 10 allowed"}</span>
+      ${result.conditionedCardCount ? `<span class="simulation-ledger">${result.conditionedCardCount.toLocaleString()} cards use personal or actual grades</span>` : ""}
       <span class="simulation-ledger">${result.cardCount.toLocaleString()} cards · ${result.selectionOptimization ? "automatic ranked sweet spot" : "saved batch"}</span>
       <span class="simulation-ledger">${result.simulations.toLocaleString()} simulations</span>
     </div>`;
@@ -2648,9 +3097,14 @@ function renderConditionalInsights() {
   const driverOverlap = drivers.slice(0, 10).filter((driver) => isChaseCard(driver.card)).length;
   const rangeProbability = count / result.simulations;
   const allTenRate = averageTotalTen / result.cardCount;
-  const normalTenCount =
-    (result.cardCount - chaseCount) * baselineTen +
-    (result.allowChasePsa10 === false ? 0 : chaseCount * baselineTen);
+  const normalTenCount = result.baselineGradeProbabilities
+    ? cardsForResult(result).reduce(
+        (sum, card, index) =>
+          sum + result.baselineGradeProbabilities[index * 4 + 3],
+        0
+      )
+    : (result.cardCount - chaseCount) * baselineTen +
+      (result.allowChasePsa10 === false ? 0 : chaseCount * baselineTen);
   const normalTenRate = normalTenCount / result.cardCount;
   const p10Scale = Math.max(allTenRate, normalTenRate, .01) * 1.15;
   const chaseCardShare = chaseCount / result.cardCount;
@@ -2811,14 +3265,24 @@ function renderInspectionPriorities() {
   const result = resultFor();
   const topStart = bucketForValue(result, result.summary.p90);
   const tail = aggregateRange(result, topStart, result.bucketCount - 1);
-  const baseline = result.weights.p10;
+  const baseline = result.baselineGradeProbabilities
+    ? cardsForResult(result).reduce(
+        (sum, card, index) =>
+          sum + result.baselineGradeProbabilities[index * 4 + 3],
+        0
+      ) / Math.max(1, result.cardCount)
+    : result.weights.p10;
   const rows = cardsForResult(result).map((card, index) => {
     const conditional = tail.count ? tail.gradeCounts[index * 4 + 3] / tail.count : 0;
     const upside = Math.max(0, card.p10 - card.p9);
-    const lift = baseline ? conditional / baseline : 0;
+    const cardBaseline = result.baselineGradeProbabilities
+      ? result.baselineGradeProbabilities[index * 4 + 3]
+      : baseline;
+    const lift = cardBaseline ? conditional / cardBaseline : 0;
     return {
       card,
       conditional,
+      baseline: cardBaseline,
       upside,
       lift,
       score: Math.max(0, card.setZScore || 0) * upside * Math.max(0.05, lift)
@@ -2872,7 +3336,7 @@ function renderPriorityChart(rows, baseline) {
     const radius = clamp(5 + Math.sqrt(row.upside) / 55, 5, 16);
     return `<g>
       <circle class="priority-dot ${index < 5 ? "top-five" : ""}" cx="${x(row.card.setZScore)}" cy="${y(row.lift)}" r="${radius}">
-        <title>${escapeHtml(row.card.card)} · set Z-score ${row.card.setZScore.toFixed(2)} · ${money(row.upside)} PSA 10-over-9 upside · PSA 10 was ${row.lift.toFixed(2)}× as common in the best 10% of runs (${percent(row.conditional)} vs ${percent(baseline)} normal)</title>
+        <title>${escapeHtml(row.card.card)} · set Z-score ${row.card.setZScore.toFixed(2)} · ${money(row.upside)} PSA 10-over-9 upside · PSA 10 was ${row.lift.toFixed(2)}× as common in the best 10% of runs (${percent(row.conditional)} vs ${percent(row.baseline)} normal)</title>
       </circle>
       ${index < 5 ? `<text class="chart-label" x="${x(row.card.setZScore) + radius + 5}" y="${y(row.lift) + 4}">${escapeHtml(shortenedCardName(row.card, 25))}</text>` : ""}
     </g>`;
@@ -2922,14 +3386,16 @@ async function rerunSelectedScenario() {
       laborCost: 0,
       excludedFirstEditions: state.activeSuite.excludedFirstEditions || 0
     }, (progress) => setProgress(progress * 0.5, `Finding ${scenario.name} sweet spot…`), state.currentWorkers);
-    const pool = selectTopCardsByExpectedAddedValue(eligibleCards, {
-      includeFirstEditions: true,
-      cardCount: optimization.sweetSpot.cardCount,
-      config: state.activeSuite.config,
-      weights: scenario.weights,
-      allowChasePsa10: scenario.allowChasePsa10 !== false,
-      laborCost: 0
-    });
+    const pool = state.cards.length
+      ? poolsForScenario(scenario, optimization.sweetSpot.cardCount)
+      : selectTopCardsByExpectedAddedValue(eligibleCards, {
+          includeFirstEditions: true,
+          cardCount: optimization.sweetSpot.cardCount,
+          config: state.activeSuite.config,
+          weights: scenario.weights,
+          allowChasePsa10: scenario.allowChasePsa10 !== false,
+          laborCost: 0
+        });
     const replacement = await runWorker({
       cards: pool.grading,
       rawValue: pool.rawValue,
@@ -2941,16 +3407,22 @@ async function rerunSelectedScenario() {
     }, (progress) => setProgress(0.5 + progress * 0.5, `Rerunning ${scenario.name}`));
     replacement.cards = pool.grading;
     replacement.rawValue = pool.rawValue;
+    replacement.committedCardCount = pool.committedCount || 0;
+    replacement.futureCardCount = pool.futureCount ?? pool.grading.length;
+    replacement.analysisMode = state.activeSuite.config.analysisMode;
     replacement.selectionOptimization = {
       frontierStep: 50,
       sweetSpot: optimization.sweetSpot,
       bestFrontier: optimization.bestFrontier,
       baseProfit: optimization.baseProfit,
-      frontier: optimization.frontier
+      frontier: optimization.frontier,
+      ranking: optimization.ranking,
+      committedGradingCount: optimization.committedGradingCount || 0
     };
     replacement.selectionDetails = pool.selectionRecords.map((record) => ({
       rank: record.rank,
-      expectedAddedValue: record.expectedAddedValue
+      expectedAddedValue: record.expectedAddedValue,
+      committed: Boolean(record.committed)
     }));
     const index = state.activeSuite.results.findIndex((item) => item.scenarioId === result.scenarioId);
     state.activeSuite.results[index] = replacement;
@@ -3209,6 +3681,7 @@ function bindEvents() {
     "miscExpenses",
     "volatilityPct",
     "firstEditionMode",
+    "analysisMode",
     "fee1500",
     "fee2500",
     "fee5000",
@@ -3218,6 +3691,93 @@ function bindEvents() {
   ].forEach((id) =>
     el(id).addEventListener("input", updateCollectionSummary)
   );
+  el("analysisMode").addEventListener("change", () => {
+    invalidateResultsAfterDatasetEdit();
+    updateCollectionSummary();
+    renderPortfolio();
+  });
+  el("portfolioScenario").addEventListener("change", (event) => {
+    state.portfolioScenarioId = event.target.value;
+    state.portfolioPage = 1;
+    renderPortfolio();
+  });
+  ["portfolioSearch", "portfolioStatusFilter", "portfolioBatchFilter", "portfolioPageSize"]
+    .forEach((id) => el(id).addEventListener("input", () => {
+      state.portfolioPage = 1;
+      renderPortfolio();
+    }));
+  el("portfolioActiveBatch").addEventListener("change", (event) => {
+    state.portfolioActiveBatchId = event.target.value;
+    renderPortfolio();
+  });
+  el("createBatchForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const input = el("newBatchName");
+    if (createPortfolioBatch(input.value)) input.value = "";
+  });
+  el("markBatchSubmittedBtn").addEventListener("click", markActiveBatchSubmitted);
+  el("deleteDraftBatchBtn").addEventListener("click", deleteActiveDraftBatch);
+  el("portfolioRows").addEventListener("change", (event) => {
+    const row = event.target.closest("[data-portfolio-card-id]");
+    if (!row) return;
+    if (event.target.matches("[data-portfolio-select]")) {
+      if (event.target.checked) {
+        state.portfolioSelectedIds.add(row.dataset.portfolioCardId);
+      } else {
+        state.portfolioSelectedIds.delete(row.dataset.portfolioCardId);
+      }
+      renderPortfolio();
+      return;
+    }
+    if (event.target.matches("[data-portfolio-field]")) {
+      updatePortfolioCard(row, event.target);
+    }
+  });
+  el("portfolioRows").addEventListener("click", (event) => {
+    const row = event.target.closest("[data-portfolio-card-id]");
+    if (!row) return;
+    if (event.target.closest(".save-portfolio-row")) savePortfolioRow(row);
+    if (event.target.closest(".reset-portfolio-row")) {
+      delete state.portfolio.records[row.dataset.portfolioCardId];
+      state.portfolioSelectedIds.delete(row.dataset.portfolioCardId);
+      persistPortfolioChange("Card record reset.");
+    }
+  });
+  el("selectPortfolioPageBtn").addEventListener("click", () => {
+    portfolioTableData().pageRows.forEach((card) =>
+      state.portfolioSelectedIds.add(String(card.id))
+    );
+    renderPortfolio();
+  });
+  el("clearPortfolioSelectionBtn").addEventListener("click", () => {
+    state.portfolioSelectedIds.clear();
+    renderPortfolio();
+  });
+  el("addSelectedToBatchBtn").addEventListener("click", () => {
+    const batch = state.portfolio.batches.find(
+      (item) => item.id === state.portfolioActiveBatchId
+    );
+    if (!batch || batch.status !== "draft") return;
+    let added = 0;
+    state.portfolioSelectedIds.forEach((cardId) => {
+      const record = portfolioRecord(cardId, true);
+      if (record.status === "inventory" || record.status === "planned") {
+        record.status = "planned";
+        record.batchId = batch.id;
+        added++;
+      }
+    });
+    state.portfolioSelectedIds.clear();
+    persistPortfolioChange(`${added.toLocaleString()} cards added to ${batch.name}.`);
+  });
+  el("portfolioPrevBtn").addEventListener("click", () => {
+    state.portfolioPage--;
+    renderPortfolio();
+  });
+  el("portfolioNextBtn").addEventListener("click", () => {
+    state.portfolioPage++;
+    renderPortfolio();
+  });
   el("detailSelectedCardSearch").addEventListener("input", renderDetailSelectedCards);
   el("downloadDetailSelectionBtn").addEventListener("click", downloadDetailSelection);
   el("profitTarget").addEventListener("input", () => {
@@ -3297,6 +3857,7 @@ function bindEvents() {
     setOptimizerBatchSize(result.bestFrontier.cardCount);
   });
   el("downloadOptimizerRankingBtn").addEventListener("click", downloadOptimizerRanking);
+  el("saveOptimizerBatchBtn").addEventListener("click", saveOptimizerSelectionAsBatch);
   el("salePlannerScenario").addEventListener("change", (event) => {
     state.salePlannerScenarioId = event.target.value;
     state.salePlannerGradeIndex = 0;
@@ -3356,6 +3917,7 @@ function bindEvents() {
 }
 
 async function initialize() {
+  await loadPortfolio();
   renderScenarioRows();
   bindEvents();
   await Promise.all([loadDefaultCsv(), refreshSavedSuites(), loadRefreshConfig()]);

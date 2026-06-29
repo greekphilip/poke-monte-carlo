@@ -165,6 +165,54 @@ test("disabling chase PSA 10 proportionally normalizes PSA 7–9 without biasing
   assert.equal(allowedTens, 20);
 });
 
+test("actual grades are deterministic and personal estimates override scenario weights", async () => {
+  const known = {
+    id: 1,
+    set: "S",
+    card: "Known PSA result",
+    raw: 10,
+    p7: 20,
+    p8: 30,
+    p9: 40,
+    p10: 100,
+    actualGrade: 9
+  };
+  const estimated = {
+    id: 2,
+    set: "S",
+    card: "Personally estimated",
+    raw: 10,
+    p7: 20,
+    p8: 30,
+    p9: 40,
+    p10: 100,
+    personalGradeWeights: { p7: 0, p8: 0, p9: 0, p10: 1 }
+  };
+  const result = await simulateScenario({
+    cards: [known, estimated],
+    rawValue: 0,
+    config,
+    scenario: {
+      id: "conditioned",
+      name: "Conditioned",
+      weights: { p7: 1, p8: 0, p9: 0, p10: 0 }
+    },
+    simulations: 20,
+    seed: 91,
+    bucketCount: 4
+  });
+  let knownNines = 0;
+  let estimatedTens = 0;
+  for (let bucket = 0; bucket < result.bucketCount; bucket++) {
+    knownNines += result.gradeCounts[(bucket * result.cardCount * 4) + 2];
+    estimatedTens += result.gradeCounts[
+      (bucket * result.cardCount * 4) + 4 + 3
+    ];
+  }
+  assert.equal(knownNines, 20);
+  assert.equal(estimatedTens, 20);
+});
+
 test("first editions are explicitly included or excluded", () => {
   const options = {
     cardCount: 3,

@@ -67,6 +67,46 @@ test("optimizer is reproducible with the same seed", async () => {
   assert.deepEqual(first.ranking, second.ranking);
 });
 
+test("live optimizer starts at committed reality and ranks only future cards", async () => {
+  const result = await optimizeGrading({
+    ...payload,
+    cards: [
+      {
+        id: 1,
+        card: "Already at PSA",
+        set: "Test",
+        raw: 100,
+        p7: 120,
+        p8: 150,
+        p9: 200,
+        p10: 300,
+        setZScore: 0,
+        operationalStatus: "graded",
+        actualGrade: 9
+      },
+      {
+        id: 2,
+        card: "Future candidate",
+        set: "Test",
+        raw: 50,
+        p7: 80,
+        p8: 80,
+        p9: 80,
+        p10: 80,
+        setZScore: 0,
+        operationalStatus: "inventory"
+      }
+    ],
+    simulations: 5
+  });
+  assert.equal(result.committedGradingCount, 1);
+  assert.equal(result.eligibleCardCount, 1);
+  assert.deepEqual(result.ranking.map((record) => record.card), ["Future candidate"]);
+  assert.equal(result.frontier[0].cardCount, 0);
+  assert.equal(result.baseProfit, 240);
+  assert.equal(result.frontier[1].median, 260);
+});
+
 test("automatic scenario selection evaluates fixed 50-card batches", async () => {
   const manyCards = Array.from({ length: 120 }, (_, index) => ({
     id: index + 1,

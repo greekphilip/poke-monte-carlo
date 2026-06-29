@@ -105,6 +105,17 @@ export function valueForGrade(card, gradeIndex) {
 }
 
 export function weightsForCard(card, rawWeights, allowChasePsa10 = true) {
+  if ([7, 8, 9, 10].includes(Number(card.actualGrade))) {
+    return {
+      p7: Number(card.actualGrade) === 7 ? 1 : 0,
+      p8: Number(card.actualGrade) === 8 ? 1 : 0,
+      p9: Number(card.actualGrade) === 9 ? 1 : 0,
+      p10: Number(card.actualGrade) === 10 ? 1 : 0
+    };
+  }
+  if (card.personalGradeWeights) {
+    return normalizeWeights(card.personalGradeWeights);
+  }
   const weights = normalizeWeights(rawWeights);
   if (allowChasePsa10 !== false || Number(card.setZScore) < 3) return weights;
   const remaining = weights.p7 + weights.p8 + weights.p9;
@@ -267,12 +278,14 @@ function runOneSimulation(context) {
 
   for (let cardIndex = 0; cardIndex < cards.length; cardIndex++) {
     const card = cards[cardIndex];
-    const cardWeights = !allowChasePsa10 && card.setZScore >= 3
-      ? chaseWeights
-      : weights;
+    const cardWeights = weightsForCard(card, weights, allowChasePsa10);
     const grade = chooseGrade(random(), cardWeights);
-    let value = valueForGrade(card, grade);
-    value = lognormalFromNormal(value, config.volatilityPct, normal());
+    let value = card.actualSalePrice === null || card.actualSalePrice === undefined
+      ? valueForGrade(card, grade)
+      : Number(card.actualSalePrice);
+    if (card.actualSalePrice === null || card.actualSalePrice === undefined) {
+      value = lognormalFromNormal(value, config.volatilityPct, normal());
+    }
     gradeBuffer[cardIndex] = grade;
     valueBuffer[cardIndex] = value;
     gross += value;
@@ -317,6 +330,14 @@ export async function simulateScenario(options, onProgress = () => {}, isCancell
         p9: weights.p9 / nonTenTotal,
         p10: 0
       };
+  const baselineGradeProbabilities = new Float64Array(cardCount * 4);
+  cards.forEach((card, cardIndex) => {
+    const cardWeights = weightsForCard(card, weights, allowChasePsa10);
+    [cardWeights.p7, cardWeights.p8, cardWeights.p9, cardWeights.p10]
+      .forEach((probability, gradeIndex) => {
+        baselineGradeProbabilities[cardIndex * 4 + gradeIndex] = probability;
+      });
+  });
   const pilotCount = Math.min(simulations, Math.max(100, Math.min(500, Math.floor(simulations / 10))));
   const pilotRandom = createRng(seed);
   const pilotContext = {
@@ -405,6 +426,12 @@ export async function simulateScenario(options, onProgress = () => {}, isCancell
     simulations,
     seed,
     cardCount,
+    conditionedCardCount: cards.filter(
+      (card) =>
+        [7, 8, 9, 10].includes(Number(card.actualGrade)) ||
+        Boolean(card.personalGradeWeights)
+    ).length,
+    baselineGradeProbabilities,
     bucketCount,
     bucketMin: bounds.minimum,
     bucketWidth: bounds.width,

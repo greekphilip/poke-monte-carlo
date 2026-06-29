@@ -7,8 +7,14 @@ import {
   normalizeWeights,
   percentile,
   rankCardsByExpectedAddedValue,
-  valueForGrade
+  valueForGrade,
+  weightsForCard as simulationWeightsForCard
 } from "./sim-core.js";
+import {
+  isCommittedGradingCard,
+  isFutureGradingCandidate,
+  isRawSoldCard
+} from "./portfolio-core.js";
 
 const CHASE_Z_THRESHOLD = 3;
 
@@ -26,7 +32,13 @@ function chaseAdjustedWeights(weights, allowChasePsa10) {
   };
 }
 
-function weightsForCard(card, weights, chaseWeights) {
+function weightsForCard(card, weights, chaseWeights, allowChasePsa10) {
+  if (card.actualGrade !== null && card.actualGrade !== undefined) {
+    return simulationWeightsForCard(card, weights, allowChasePsa10);
+  }
+  if (card.personalGradeWeights) {
+    return simulationWeightsForCard(card, weights, allowChasePsa10);
+  }
   return Number(card.setZScore) >= CHASE_Z_THRESHOLD ? chaseWeights : weights;
 }
 
@@ -167,14 +179,23 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
   const weights = normalizeWeights(scenario.weights);
   const chaseWeights = chaseAdjustedWeights(weights, scenario.allowChasePsa10);
   const safeLaborCost = Math.max(0, Number(laborCost) || 0);
+  const candidateCards = cards.filter(isFutureGradingCandidate);
+  const committedCards = cards.filter(isCommittedGradingCard);
+  const rawSoldCards = cards.filter(isRawSoldCard);
   const rawTotal = cards.reduce((sum, card) => sum + card.raw, 0);
-  const baseProfit =
+  const rawSoldAdjustment = rawSoldCards.reduce(
+    (sum, card) => sum +
+      ((Number(card.actualSalePrice) || 0) - card.raw) * (1 - config.sellingFeePct),
+    0
+  );
+  const staticBaseProfit =
     rawTotal * (1 - config.sellingFeePct) -
     config.miscExpenses -
-    config.acquisitionCost;
+    config.acquisitionCost +
+    rawSoldAdjustment;
 
   const ranking = rankCardsByExpectedAddedValue(
-    cards,
+    candidateCards,
     config,
     scenario.weights,
     scenario.allowChasePsa10,
@@ -194,7 +215,7 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
   }));
 
   const frontierDefinitions = rankedDefinitions(
-    cards.length,
+    candidateCards.length,
     Math.max(1, Math.floor(Number(frontierStep) || 50))
   );
   const frontierOutputs = makePointOutputs(frontierDefinitions, simulations);
@@ -202,14 +223,45 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
 
   const random = createRng(seed);
   const normal = createNormalSampler(random);
-  const contributions = new Float64Array(cards.length);
+  const contributions = new Float64Array(candidateCards.length);
   const rankedIndexes = ranking.map((record) => record.index);
   const volatilityEnabled = Number(config.volatilityPct) > 0;
 
   for (let run = 0; run < simulations; run++) {
-    for (let index = 0; index < cards.length; index++) {
-      const card = cards[index];
-      const cardWeights = weightsForCard(card, weights, chaseWeights);
+    let committedIncrement = 0;
+    for (const card of committedCards) {
+      const cardWeights = weightsForCard(
+        card,
+        weights,
+        chaseWeights,
+        scenario.allowChasePsa10
+      );
+      const grade = chooseGrade(random(), cardWeights);
+      const hasActualSale = card.actualSalePrice !== null &&
+        card.actualSalePrice !== undefined;
+      const listedValue = hasActualSale
+        ? Number(card.actualSalePrice)
+        : valueForGrade(card, grade);
+      const realizedValue = hasActualSale
+        ? listedValue
+        : lognormalFromNormal(
+            listedValue,
+            config.volatilityPct,
+            volatilityEnabled ? normal() : 0
+          );
+      committedIncrement +=
+        (realizedValue - card.raw) * (1 - config.sellingFeePct) -
+        gradeFee(realizedValue, config.fees) -
+        safeLaborCost;
+    }
+    for (let index = 0; index < candidateCards.length; index++) {
+      const card = candidateCards[index];
+      const cardWeights = weightsForCard(
+        card,
+        weights,
+        chaseWeights,
+        scenario.allowChasePsa10
+      );
       const grade = chooseGrade(random(), cardWeights);
       const listedValue = valueForGrade(card, grade);
       const realizedValue = lognormalFromNormal(
@@ -227,7 +279,7 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
       frontierCheckpoints,
       rankedIndexes,
       contributions,
-      baseProfit,
+      staticBaseProfit + committedIncrement,
       run
     );
 
@@ -252,10 +304,13 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
     config,
     simulations,
     seed,
-    eligibleCardCount: cards.length,
+    eligibleCardCount: candidateCards.length,
+    portfolioCardCount: cards.length,
+    committedGradingCount: committedCards.length,
+    rawSoldCount: rawSoldCards.length,
     excludedFirstEditions: payload.excludedFirstEditions || 0,
     laborCost: safeLaborCost,
-    baseProfit,
+    baseProfit: frontier[0].median,
     frontier,
     bestFrontier,
     sweetSpot: findSweetSpot(frontier),

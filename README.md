@@ -87,6 +87,27 @@ A PSA 10 weight of 10% means that every card sent for grading independently has 
 
 Grade outcomes are independent between cards. The presets are conditional assumptions, not probabilities assigned to the real world. Non-grade inputs are shared across a suite so the comparison isolates grade sensitivity.
 
+## Portfolio Tracker and live modeling
+
+The **Portfolio Tracker** stores real-world execution data separately from `pricecharting.csv`, so a market-price refresh cannot overwrite grading or sale history. Each physical card can record:
+
+- lifecycle status: inventory, planned, at PSA, graded, or sold;
+- a named grading batch;
+- a personal PSA 7–10 estimate plus confidence;
+- the actual PSA grade; and
+- the actual gross sale price.
+
+Draft batches are planning aids. The tracker compares a draft with the highest-expected-value batch of the same size and reports omissions and negative-EV selections. A batch becomes part of the model only after **Mark sent to PSA** is used.
+
+Scenario Lab’s **Modeling mode** controls how this data affects simulations:
+
+- **Pre-purchase / ignore tracker** preserves the original acquisition model.
+- **Live portfolio / use tracker** starts every frontier at the current committed portfolio state. Submitted cards remain uncertain, graded cards use their actual grade in every run, sold cards use their actual gross proceeds, and only unsent cards appear on the additional-grading frontier.
+
+A personal estimate overrides scenario weights for that card. The entered confidence is assigned to the estimated grade; the remaining probability is distributed toward the other grades with nearer grades receiving more weight. Once an actual grade is recorded, it replaces both the personal estimate and the scenario in every simulation.
+
+The tracker and batches are saved in IndexedDB in the current browser. The Grading Optimizer’s current selection can be saved directly as a new draft batch.
+
 ## Selecting cards for grading
 
 Every PSA scenario ranks every eligible card by expected added value:
@@ -172,6 +193,8 @@ The raw-card table ranks the complete remaining collection in descending raw-val
 5. Click a scenario to open Scenario Detail.
 6. Drag across any dollar range in the profit histogram to see which cards and grade outcomes drove that range.
 
+After a purchase, open **Portfolio Tracker**, create or save a draft batch, check its alignment with the ranking, and mark it sent only when it is actually submitted. Then switch Scenario Lab to **Live portfolio** so subsequent simulations branch from the known results and outstanding commitments rather than restarting from the original assumptions.
+
 Scenario Detail separates two ideas:
 
 - **Top sellers in the selected outcome range:** cards with the largest realized contribution.
@@ -189,6 +212,8 @@ Completed and partial suites are stored in IndexedDB in the current browser. The
 - Compact profit buckets and card-level conditional aggregates
 
 Suites can be renamed, deleted, exported as compressed `.pokemon-mc.json.gz` files, and imported on another computer. Importing a suite made from a different dataset displays a warning.
+
+Portfolio Tracker data is also stored in IndexedDB, but independently from saved suites and from the editable price dataset.
 
 ## Dataset Editor
 
@@ -230,4 +255,4 @@ Requires Node.js 20 or newer:
 npm test
 ```
 
-Tests cover grade normalization and PSA 10 assignment, fee tiers, first-edition filtering, expected-value ranking and top-N selection, ranked-frontier math, two-stage raw-sale accounting, New Jersey progressive-tax estimates, seeded reproducibility, bucket aggregation, and portable typed-array serialization.
+Tests cover grade normalization and PSA 10 assignment, deterministic actual grades, card-specific personal estimates, live committed-portfolio frontiers, batch alignment, fee tiers, first-edition filtering, expected-value ranking and top-N selection, ranked-frontier math, two-stage raw-sale accounting, New Jersey progressive-tax estimates, seeded reproducibility, bucket aggregation, and portable typed-array serialization.
