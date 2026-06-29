@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyPortfolioToCards,
-  batchAlignment,
   estimatedGradeWeights,
   isCommittedGradingCard,
   isFutureGradingCandidate,
@@ -49,17 +48,6 @@ test("portfolio data enriches cards without modifying the price dataset", () => 
   assert.equal(isFutureGradingCandidate(enriched[1]), true);
 });
 
-test("batch alignment compares a proposed batch with the ideal same-sized batch", () => {
-  const result = batchAlignment(["a", "c"], [
-    { id: "a", expectedIncrement: 100 },
-    { id: "b", expectedIncrement: 50 },
-    { id: "c", expectedIncrement: -10 }
-  ]);
-  assert.equal(result.alignedCount, 1);
-  assert.equal(result.alignmentRate, 0.5);
-  assert.equal(result.negativeCount, 1);
-  assert.deepEqual(result.missed.map((record) => record.id), ["b"]);
-});
 
 test("portfolio summary counts stages and realized gross sales", () => {
   const cards = [{ id: 1 }, { id: 2 }, { id: 3 }];

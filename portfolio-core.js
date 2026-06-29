@@ -13,24 +13,12 @@ export function emptyPortfolio() {
     id: "active",
     schemaVersion: PORTFOLIO_SCHEMA_VERSION,
     updatedAt: new Date().toISOString(),
-    batches: [],
     records: {}
   };
 }
 
 export function normalizePortfolio(value) {
   const source = value && typeof value === "object" ? value : {};
-  const batches = Array.isArray(source.batches)
-    ? source.batches.map((batch) => ({
-        id: String(batch.id || ""),
-        name: String(batch.name || "Untitled batch"),
-        status: batch.status === "submitted" || batch.status === "closed"
-          ? batch.status
-          : "draft",
-        createdAt: batch.createdAt || new Date().toISOString(),
-        submittedAt: batch.submittedAt || null
-      })).filter((batch) => batch.id)
-    : [];
   const records = {};
   Object.entries(source.records || {}).forEach(([cardId, record]) => {
     const normalized = normalizeCardRecord(record);
@@ -40,7 +28,6 @@ export function normalizePortfolio(value) {
     id: "active",
     schemaVersion: PORTFOLIO_SCHEMA_VERSION,
     updatedAt: source.updatedAt || new Date().toISOString(),
-    batches,
     records
   };
 }
@@ -64,7 +51,6 @@ export function normalizeCardRecord(record = {}) {
   if (actualSalePrice !== null) status = "sold";
   return {
     status,
-    batchId: record.batchId ? String(record.batchId) : null,
     estimatedGrade,
     estimateConfidence: estimatedGrade === null
       ? null
@@ -78,7 +64,6 @@ export function normalizeCardRecord(record = {}) {
 export function hasOperationalData(record) {
   return Boolean(
     record.status !== "inventory" ||
-    record.batchId ||
     record.estimatedGrade !== null ||
     record.actualGrade !== null ||
     record.actualSalePrice !== null ||
@@ -109,17 +94,13 @@ export function estimatedGradeWeights(grade, confidence = 70) {
 export function applyPortfolioToCards(cards, portfolio, enabled = true) {
   if (!enabled) return cards.map((card) => ({ ...card }));
   const normalized = normalizePortfolio(portfolio);
-  const batches = new Map(normalized.batches.map((batch) => [batch.id, batch]));
   return cards.map((card) => {
     const record = normalized.records[String(card.id)];
     if (!record) return { ...card, operationalStatus: "inventory" };
-    const batch = record.batchId ? batches.get(record.batchId) : null;
     let status = record.status;
-    if (status === "planned" && batch?.status === "submitted") status = "submitted";
     return {
       ...card,
       operationalStatus: status,
-      batchId: record.batchId,
       estimatedGrade: record.estimatedGrade,
       estimateConfidence: record.estimateConfidence,
       personalGradeWeights: estimatedGradeWeights(
@@ -159,31 +140,7 @@ export function portfolioSummary(cards, portfolio) {
   });
   return {
     counts,
-    realizedGross,
-    batchCount: normalized.batches.length,
-    submittedBatchCount: normalized.batches.filter(
-      (batch) => batch.status === "submitted" || batch.status === "closed"
-    ).length
+    realizedGross
   };
 }
 
-export function batchAlignment(batchCardIds, ranking) {
-  const ids = new Set((batchCardIds || []).map(String));
-  const batchSize = ids.size;
-  const idealIds = new Set(ranking.slice(0, batchSize).map((record) => String(record.id)));
-  const alignedCount = [...ids].filter((id) => idealIds.has(id)).length;
-  const selectedRecords = ranking.filter((record) => ids.has(String(record.id)));
-  const negativeCount = selectedRecords.filter(
-    (record) => Number(record.expectedIncrement) < 0
-  ).length;
-  const missed = ranking
-    .slice(0, batchSize)
-    .filter((record) => !ids.has(String(record.id)));
-  return {
-    batchSize,
-    alignedCount,
-    alignmentRate: batchSize ? alignedCount / batchSize : 0,
-    negativeCount,
-    missed
-  };
-}

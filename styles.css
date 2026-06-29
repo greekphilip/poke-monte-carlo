@@ -867,13 +867,12 @@ tbody tr.clickable:hover td { background: rgba(119, 232, 181, .055); }
 .mode-explainer { margin: 14px 0 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); background: rgba(119,232,181,.04); }
 .portfolio-scenario-field { min-width: min(360px, 100%); }
 .portfolio-metrics { margin-top: 18px; }
-.portfolio-batch-controls, .portfolio-toolbar { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin: 18px 0; }
-.portfolio-batch-controls .inline-form { display: flex; flex: 1 1 420px; gap: 10px; align-items: end; }
-.portfolio-batch-controls .inline-form .field { flex: 1; }
-.portfolio-batch-controls > .field, .portfolio-toolbar .field { min-width: 170px; flex: 1; }
+.portfolio-toolbar { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin: 18px 0; }
+.portfolio-toolbar .field { min-width: 170px; flex: 1; }
 .portfolio-toolbar .field:first-child { flex: 2 1 300px; }
 .portfolio-table-scroll { max-height: 720px; }
-.portfolio-table { min-width: 1530px; }
+.portfolio-table { min-width: 1400px; }
+.portfolio-table th, .portfolio-table td { padding: 8px 12px; }
 .portfolio-table input[type="number"], .portfolio-table select { min-width: 104px; }
 .portfolio-table td:nth-child(2) { min-width: 280px; }
 .status-pill { display: inline-flex; padding: 4px 8px; border: 1px solid rgba(119,232,181,.3); border-radius: 999px; color: var(--mint); font-size: .78rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
@@ -925,5 +924,5 @@ tbody tr.clickable:hover td { background: rgba(119, 232, 181, .055); }
   .simulation-ledger { margin-left: 0; }
   .saved-bar { overflow-x: auto; }
   .saved-bar > div { min-width: 180px; }
-  .portfolio-batch-controls .inline-form { flex-direction: column; align-items: stretch; }
+
 }

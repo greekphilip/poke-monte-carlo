@@ -102,7 +102,7 @@ test("live optimizer starts at committed reality and ranks only future cards", a
   assert.equal(result.committedGradingCount, 1);
   assert.equal(result.eligibleCardCount, 1);
   assert.deepEqual(result.ranking.map((record) => record.card), ["Future candidate"]);
-  assert.equal(result.frontier[0].cardCount, 0);
+  assert.equal(result.frontier[0].cardCount, 1);
   assert.equal(result.baseProfit, 240);
   assert.equal(result.frontier[1].median, 260);
 });
@@ -133,7 +133,7 @@ test("global sweet range starts after every scenario is efficient and ends befor
     {
       scenarioId: "a",
       scenarioName: "A",
-      sweetSpot: { cardCount: 100 },
+      sweetSpot: { incrementalCount: 100 },
       ranking: Array.from({ length: 300 }, (_, index) => ({
         expectedIncrement: index < 275 ? 1 : -1
       }))
@@ -141,7 +141,7 @@ test("global sweet range starts after every scenario is efficient and ends befor
     {
       scenarioId: "b",
       scenarioName: "B",
-      sweetSpot: { cardCount: 150 },
+      sweetSpot: { incrementalCount: 150 },
       ranking: Array.from({ length: 300 }, (_, index) => ({
         expectedIncrement: index < 240 ? 1 : -1
       }))
@@ -161,7 +161,7 @@ test("global sweet range reports when efficiency and universally-positive rules 
     {
       scenarioId: "a",
       scenarioName: "A",
-      sweetSpot: { cardCount: 250 },
+      sweetSpot: { incrementalCount: 250 },
       ranking: Array.from({ length: 300 }, (_, index) => ({
         expectedIncrement: index < 200 ? 1 : -1
       }))
@@ -169,7 +169,7 @@ test("global sweet range reports when efficiency and universally-positive rules 
     {
       scenarioId: "b",
       scenarioName: "B",
-      sweetSpot: { cardCount: 225 },
+      sweetSpot: { incrementalCount: 225 },
       ranking: Array.from({ length: 300 }, (_, index) => ({
         expectedIncrement: index < 220 ? 1 : -1
       }))

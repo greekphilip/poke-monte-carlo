@@ -26,7 +26,6 @@ import {
 import {
   CARD_STATUSES,
   applyPortfolioToCards,
-  batchAlignment,
   emptyPortfolio,
   isCommittedGradingCard,
   isFutureGradingCandidate,
@@ -82,7 +81,6 @@ const state = {
   portfolioPage: 1,
   portfolioPageSize: 100,
   portfolioScenarioId: "",
-  portfolioActiveBatchId: "",
   scenarios: PRESETS.map(([name, p7, p8, p9, p10], index) => ({
     id: `preset-${index + 1}`,
     name,
@@ -1150,7 +1148,7 @@ function modeledCards() {
   return applyPortfolioToCards(
     state.cards,
     state.portfolio,
-    liveModeEnabled()
+    true
   );
 }
 
@@ -1476,7 +1474,7 @@ async function runSuite() {
             state.currentWorkers
           );
           if (state.cancelRequested) throw new Error("Simulation cancelled.");
-          const pool = poolsForScenario(scenario, optimization.sweetSpot.cardCount);
+          const pool = poolsForScenario(scenario, optimization.sweetSpot.incrementalCount);
           const result = await runWorker(
             {
               cards: pool.grading,
@@ -1685,6 +1683,14 @@ function refreshOptimizerScenarioSelect() {
       <span><strong>${escapeHtml(scenario.name)}</strong><small>${effectiveMix(scenario.weights)} · chase 10 ${scenario.allowChasePsa10 === false ? "off" : "on"}</small></span>
     </label>`)
     .join("");
+    
+  const condSelect = el("optimizerConditioningScenario");
+  if (condSelect) {
+    const current = condSelect.value;
+    condSelect.innerHTML = state.scenarios.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join("");
+    if (current && state.scenarios.some(s => s.id === current)) condSelect.value = current;
+  }
+  
   updateOptimizerWorkEstimate();
 }
 
@@ -1698,6 +1704,10 @@ function updateOptimizerWorkEstimate() {
   const cards = optimizerEligibleCards().length;
   const simulations = numberValue("optimizerSimulationCount");
   const scenarioCount = state.optimizerSelectedScenarioIds.size;
+  
+  el("optimizerConditioningSlider").max = cards;
+  el("optimizerConditioningNumber").max = cards;
+  
   if (!cards) {
     el("optimizerWorkEstimate").textContent = "Load the collection first";
     return;
@@ -1716,7 +1726,7 @@ function setOptimizerProgress(progress, message) {
   el("optimizerRunStatus").textContent = message;
 }
 
-function optimizerSeriesChart(containerId, series, globalRange = null) {
+function optimizerSeriesChart(containerId, series, globalRange = null, conditioningCount = 0) {
   const container = el(containerId);
   const points = series.flatMap((item) => item.points);
   if (!points.length) {
@@ -1780,12 +1790,22 @@ function optimizerSeriesChart(containerId, series, globalRange = null) {
           <text class="global-sweet-label" x="${startX + bandWidth / 2}" y="${margin.top + 16}" text-anchor="middle">GLOBAL SWEET RANGE · ${globalRange.efficientStart.toLocaleString()}–${globalRange.positiveCeiling.toLocaleString()}</text>`;
       })()
     : "";
+    
+  const conditioningMarkup = conditioningCount > 0
+    ? (() => {
+        const condX = x(conditioningCount);
+        return `
+          <line class="global-sweet-boundary" x1="${condX}" x2="${condX}" y1="${margin.top}" y2="${height - margin.bottom}" stroke-dasharray="6,4" stroke="var(--text-muted)" stroke-width="2" />
+          <text class="global-sweet-label" x="${condX}" y="${margin.top + 32}" text-anchor="middle" fill="var(--text-muted)">WHERE I'M AT NOW (${conditioningCount.toLocaleString()})</text>`;
+      })()
+    : "";
 
   container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" aria-hidden="true">
     ${yTicks.map((value) => `<line class="optimizer-grid" x1="${margin.left}" x2="${width - margin.right}" y1="${y(value)}" y2="${y(value)}" />`).join("")}
     ${xTicks.map((value) => `<line class="optimizer-grid" x1="${x(value)}" x2="${x(value)}" y1="${margin.top}" y2="${height - margin.bottom}" />`).join("")}
     ${zeroLine}
     ${globalRangeMarkup}
+    ${conditioningMarkup}
     ${series.map((item) => `<path d="${ribbonPath(item.points)}" fill="${item.color}" fill-opacity=".12" />`).join("")}
     ${series.map((item) => `<path d="${linePath(item.points, "median")}" fill="none" stroke="${item.color}" stroke-width="3" />`).join("")}
     ${series.map((item) => ordered(item.points).map((point) =>
@@ -1851,7 +1871,7 @@ function setOptimizerBatchSize(value, renderRows = true) {
     0
   );
   const negativeCount = selected.filter((record) => record.expectedIncrement < 0).length;
-  const relativeToSweetSpot = count - result.sweetSpot.cardCount;
+  const relativeToSweetSpot = count - result.sweetSpot.incrementalCount;
   const comparison = relativeToSweetSpot === 0
     ? "This is the calculated sweet spot."
     : relativeToSweetSpot > 0
@@ -1902,7 +1922,7 @@ function renderOptimizerResults() {
   el("optimizerSummary").innerHTML = globalSummary + state.optimizerResults.map((result, index) => `
     <article class="metric-card" style="border-color:${OPTIMIZER_COLORS[index % OPTIMIZER_COLORS.length]}55">
       <span>${escapeHtml(result.scenarioName)} sweet spot</span>
-      <strong style="color:${OPTIMIZER_COLORS[index % OPTIMIZER_COLORS.length]}">${result.sweetSpot.cardCount.toLocaleString()} ${liveModeEnabled() ? "additional " : ""}cards</strong>
+      <strong style="color:${OPTIMIZER_COLORS[index % OPTIMIZER_COLORS.length]}">${result.sweetSpot.incrementalCount.toLocaleString()} ${liveModeEnabled() ? "additional " : ""}cards</strong>
       <small>Median ${money(result.sweetSpot.median)} · P5 ${money(result.sweetSpot.p5)} · P95 ${money(result.sweetSpot.p95)}</small>
     </article>
   `).join("");
@@ -1911,7 +1931,8 @@ function renderOptimizerResults() {
   ).join("") + (globalRange?.hasOverlap
     ? `<span><i class="global-range-swatch"></i>Global sweet range</span>`
     : "");
-  optimizerSeriesChart("frontierChart", series, globalRange);
+  const conditioningCount = state.optimizerResults[0]?.conditioning?.count || 0;
+  optimizerSeriesChart("frontierChart", series, globalRange, conditioningCount);
   if (globalRange?.hasOverlap) {
     el("globalFrontierExplanation").innerHTML =
       `<strong>Global recommendation: ${globalRange.recommendedCount.toLocaleString()} cards.</strong> ` +
@@ -1945,19 +1966,19 @@ function renderActiveOptimizerResult() {
   if (!result) return;
   const sweet = result.sweetSpot;
   const best = result.bestFrontier;
-  const cardsAvoided = Math.max(0, result.eligibleCardCount - sweet.cardCount);
+  const cardsAvoided = Math.max(0, result.eligibleCardCount - sweet.incrementalCount);
   const improvementKept = best.median === result.baseProfit
     ? 100
     : (sweet.median - result.baseProfit) / (best.median - result.baseProfit) * 100;
   el("frontierExplanation").innerHTML =
-    `<strong>${escapeHtml(result.scenarioName)}:</strong> grade the first <strong>${sweet.cardCount.toLocaleString()} ${liveModeEnabled() ? "additional " : ""}cards</strong> in this scenario’s ranked list. ` +
+    `<strong>${escapeHtml(result.scenarioName)}:</strong> grade the first <strong>${sweet.incrementalCount.toLocaleString()} ${liveModeEnabled() ? "additional " : ""}cards</strong> in this scenario’s ranked list. ` +
     `${result.committedGradingCount ? `${result.committedGradingCount.toLocaleString()} already-committed cards are included at the chart’s starting point. ` : ""}` +
     `That batch retained ${Math.max(0, improvementKept).toFixed(1)}% of the best median-profit improvement found, while avoiding ${cardsAvoided.toLocaleString()} lower-value grading submissions. ` +
     `Switch “Ranking scenario” below to inspect another colored line.`;
   el("optimizerBatchSlider").max = result.ranking.length;
   el("optimizerBatchNumber").max = result.ranking.length;
   el("optimizerCardSearch").value = "";
-  setOptimizerBatchSize(result.sweetSpot.cardCount);
+  setOptimizerBatchSize(result.sweetSpot.incrementalCount);
 }
 
 function runOptimizerWorker(payload, progressCallback = () => {}, workerCollection = state.optimizerWorkers) {
@@ -2012,6 +2033,20 @@ async function runOptimizer() {
     return toast(error.message);
   }
 
+  const condCount = numberValue("optimizerConditioningNumber") || 0;
+  let conditioning = null;
+  if (condCount > 0) {
+    const condScenarioId = el("optimizerConditioningScenario").value;
+    const condScenario = state.scenarios.find(s => s.id === condScenarioId);
+    if (condScenario) {
+      conditioning = {
+        count: condCount,
+        weights: structuredClone(condScenario.weights),
+        allowChasePsa10: condScenario.allowChasePsa10 !== false
+      };
+    }
+  }
+
   const cards = optimizerEligibleCards();
   state.optimizerRunning = true;
   el("runOptimizerBtn").disabled = true;
@@ -2048,7 +2083,8 @@ async function runOptimizer() {
             seed,
             frontierStep: Math.max(1, Math.floor(numberValue("optimizerFrontierStep"))),
             laborCost: Math.max(0, numberValue("optimizerLaborCost")),
-            excludedFirstEditions: state.cards.length - cards.length
+            excludedFirstEditions: state.cards.length - cards.length,
+            conditioning
           }, (progress) => {
             progresses[index] = progress;
             updateProgress();
@@ -2503,17 +2539,12 @@ function portfolioRanking() {
 function portfolioTableData(ranking = portfolioRanking()) {
   const query = el("portfolioSearch").value.trim().toLowerCase();
   const status = el("portfolioStatusFilter").value;
-  const batchId = el("portfolioBatchFilter").value;
   const rankById = new Map(ranking.map((record) => [String(record.id), record]));
   const filtered = state.cards.filter((card) => {
     const record = normalizeCardRecord(portfolioRecord(card.id) || {});
     return (!query || `${card.card} ${card.set} ${card.id}`.toLowerCase().includes(query)) &&
-      (!status || record.status === status) &&
-      (!batchId || record.batchId === batchId);
+      (!status || record.status === status);
   }).sort((a, b) => {
-    const aTracked = portfolioRecord(a.id) ? 0 : 1;
-    const bTracked = portfolioRecord(b.id) ? 0 : 1;
-    if (aTracked !== bTracked) return aTracked - bTracked;
     const aRank = rankById.get(String(a.id))?.rank ?? Number.MAX_SAFE_INTEGER;
     const bRank = rankById.get(String(b.id))?.rank ?? Number.MAX_SAFE_INTEGER;
     return aRank - bRank || a.card.localeCompare(b.card);
@@ -2532,89 +2563,11 @@ function portfolioTableData(ranking = portfolioRanking()) {
   };
 }
 
-function batchCardIds(batchId) {
-  return Object.entries(state.portfolio.records)
-    .filter(([, record]) => record.batchId === batchId)
-    .map(([cardId]) => cardId);
-}
+function batchCardIds(batchId) {}
 
-function renderPortfolioBatches(ranking) {
-  const batches = state.portfolio.batches;
-  el("portfolioBatchRows").innerHTML = batches.length
-    ? batches.map((batch) => {
-        const ids = batchCardIds(batch.id);
-        const records = ids.map((id) => normalizeCardRecord(state.portfolio.records[id]));
-        const grades = records
-          .map((record) => record.actualGrade)
-          .filter((grade) => grade !== null);
-        const soldGross = records.reduce(
-          (sum, record) => sum + (record.actualSalePrice || 0),
-          0
-        );
-        const alignment = batch.status === "draft"
-          ? batchAlignment(ids, ranking)
-          : null;
-        return `<tr>
-          <td><strong>${escapeHtml(batch.name)}</strong><br><span class="context-copy">${batch.status === "draft" ? "Draft / not sent" : batch.status === "submitted" ? "Sent to PSA" : "Closed"}</span></td>
-          <td>${ids.length.toLocaleString()}</td>
-          <td>${grades.length ? `${grades.length.toLocaleString()} back · avg ${(grades.reduce((sum, grade) => sum + grade, 0) / grades.length).toFixed(2)}` : "—"}</td>
-          <td>${soldGross ? money(soldGross) : "—"}</td>
-          <td>${alignment ? `${alignment.alignedCount}/${alignment.batchSize} ideal${alignment.negativeCount ? ` · ${alignment.negativeCount} negative EV` : ""}` : "Committed"}</td>
-        </tr>`;
-      }).join("")
-    : `<tr><td colspan="5" class="context-copy">No batches yet. Create a draft here or save a selected optimizer batch.</td></tr>`;
+function renderPortfolioBatches(ranking) {}
 
-  const options = batches.map((batch) =>
-    `<option value="${escapeHtml(batch.id)}">${escapeHtml(batch.name)} · ${batch.status}</option>`
-  ).join("");
-  ["portfolioActiveBatch", "portfolioBatchFilter"].forEach((id) => {
-    const node = el(id);
-    const previous = id === "portfolioActiveBatch"
-      ? state.portfolioActiveBatchId
-      : node.value;
-    node.innerHTML = id === "portfolioBatchFilter"
-      ? `<option value="">All batches</option>${options}`
-      : `<option value="">Choose a batch…</option>${options}`;
-    if ([...node.options].some((option) => option.value === previous)) {
-      node.value = previous;
-    }
-  });
-  if (
-    !state.portfolio.batches.some(
-      (batch) => batch.id === state.portfolioActiveBatchId
-    )
-  ) {
-    state.portfolioActiveBatchId =
-      state.portfolio.batches.find((batch) => batch.status === "draft")?.id ||
-      state.portfolio.batches[0]?.id ||
-      "";
-  }
-  el("portfolioActiveBatch").value = state.portfolioActiveBatchId;
-}
-
-function renderPortfolioStrategy(ranking) {
-  const batch = state.portfolio.batches.find(
-    (item) => item.id === state.portfolioActiveBatchId
-  );
-  el("markBatchSubmittedBtn").disabled = !batch || batch.status !== "draft";
-  el("deleteDraftBatchBtn").disabled = !batch || batch.status !== "draft";
-  el("addSelectedToBatchBtn").disabled =
-    !batch || batch.status !== "draft" || !state.portfolioSelectedIds.size;
-  if (!batch) {
-    el("portfolioStrategy").innerHTML =
-      `<strong>Choose or create a draft batch.</strong> Its cards will be compared with the highest-EV same-sized batch under the selected scenario.`;
-    return;
-  }
-  const alignment = batchAlignment(batchCardIds(batch.id), ranking);
-  const missed = alignment.missed.slice(0, 3);
-  el("portfolioStrategy").innerHTML = batch.status !== "draft"
-    ? `<strong>${escapeHtml(batch.name)} is committed.</strong> Its uncertain cards are now included at the live model’s x=0; actual grades replace those uncertainties as you enter them.`
-    : alignment.batchSize
-      ? `<strong>${alignment.alignedCount.toLocaleString()} of ${alignment.batchSize.toLocaleString()} cards match the ideal same-sized batch (${percent(alignment.alignmentRate)}).</strong> ` +
-        `${alignment.negativeCount ? `<span class="warn">${alignment.negativeCount.toLocaleString()} selected card${alignment.negativeCount === 1 ? " has" : "s have"} negative expected added value.</span> ` : ""}` +
-        `${missed.length ? `Highest-ranked omissions: ${missed.map((record) => `${escapeHtml(record.card)} (${record.expectedIncrement >= 0 ? "+" : ""}${money(record.expectedIncrement)})`).join(", ")}.` : "The draft matches the current ranking."}`
-      : `<strong>${escapeHtml(batch.name)} is empty.</strong> Select cards below or save the current optimizer selection into a batch.`;
-}
+function renderPortfolioStrategy(ranking) {}
 
 function renderPortfolio() {
   if (!el("portfolioView") || !state.cards.length) return;
@@ -2630,14 +2583,12 @@ function renderPortfolio() {
   el("portfolioScenario").value = state.portfolioScenarioId;
   const summary = portfolioSummary(state.cards, state.portfolio);
   el("portfolioMetrics").innerHTML = `
-    <article class="metric-card"><span>Inventory</span><strong>${summary.counts.inventory.toLocaleString()}</strong><small>Not in a batch</small></article>
-    <article class="metric-card"><span>Next batches</span><strong>${summary.counts.planned.toLocaleString()}</strong><small>Draft decisions</small></article>
+    <article class="metric-card"><span>Inventory</span><strong>${summary.counts.inventory.toLocaleString()}</strong><small>Raw cards</small></article>
+    <article class="metric-card"><span>Next</span><strong>${summary.counts.planned.toLocaleString()}</strong><small>Planned</small></article>
     <article class="metric-card"><span>At PSA</span><strong>${summary.counts.submitted.toLocaleString()}</strong><small>Uncertain but committed</small></article>
     <article class="metric-card"><span>Grades back</span><strong>${summary.counts.graded.toLocaleString()}</strong><small>Deterministic grades</small></article>
     <article class="metric-card"><span>Sold</span><strong>${summary.counts.sold.toLocaleString()}</strong><small>${money(summary.realizedGross)} actual gross</small></article>`;
   const ranking = portfolioRanking();
-  renderPortfolioBatches(ranking);
-  renderPortfolioStrategy(ranking);
   const { filtered, pageRows, pageCount, start, rankById } = portfolioTableData(ranking);
   el("portfolioRows").innerHTML = pageRows.map((card) => {
     const record = normalizeCardRecord(portfolioRecord(card.id) || {});
@@ -2650,7 +2601,6 @@ function renderPortfolio() {
       <td><strong>${escapeHtml(card.card)}</strong><br><span class="context-copy">${escapeHtml(card.set)} · ID ${escapeHtml(card.id)}</span></td>
       <td>${committed ? `<span class="status-pill">Committed</span>` : rank ? `#${rank.rank.toLocaleString()}<br><span class="${rank.expectedIncrement >= 0 ? "positive" : "negative"}">${rank.expectedIncrement >= 0 ? "+" : ""}${money(rank.expectedIncrement)}</span>` : "—"}</td>
       <td><select data-portfolio-field="status">${CARD_STATUSES.map(([value, label]) => `<option value="${value}" ${record.status === value ? "selected" : ""}>${label}</option>`).join("")}</select></td>
-      <td><select data-portfolio-field="batchId"><option value="">No batch</option>${state.portfolio.batches.map((batch) => `<option value="${escapeHtml(batch.id)}" ${record.batchId === batch.id ? "selected" : ""}>${escapeHtml(batch.name)}</option>`).join("")}</select></td>
       <td><select data-portfolio-field="estimatedGrade"><option value="">Scenario mix</option>${[7, 8, 9, 10].map((grade) => `<option value="${grade}" ${record.estimatedGrade === grade ? "selected" : ""}>PSA ${grade}</option>`).join("")}</select></td>
       <td><input data-portfolio-field="estimateConfidence" type="number" min="1" max="100" value="${record.estimateConfidence ?? 70}" ${record.estimatedGrade === null ? "disabled" : ""} aria-label="Estimate confidence percent" /></td>
       <td><select data-portfolio-field="actualGrade"><option value="">Waiting</option>${[7, 8, 9, 10].map((grade) => `<option value="${grade}" ${record.actualGrade === grade ? "selected" : ""}>PSA ${grade}</option>`).join("")}</select></td>
@@ -2666,72 +2616,17 @@ function renderPortfolio() {
     `${state.portfolioSelectedIds.size.toLocaleString()} selected`;
 }
 
-function createPortfolioBatch(name, cardIds = []) {
-  const cleanName = String(name || "").trim();
-  if (!cleanName) return toast("Enter a batch name first.");
-  const batch = {
-    id: uid(),
-    name: cleanName,
-    status: "draft",
-    createdAt: new Date().toISOString(),
-    submittedAt: null
-  };
-  state.portfolio.batches.push(batch);
-  state.portfolioActiveBatchId = batch.id;
-  cardIds.forEach((cardId) => {
-    const record = portfolioRecord(cardId, true);
-    if (record.status === "inventory" || record.status === "planned") {
-      record.status = "planned";
-      record.batchId = batch.id;
-    }
-  });
-  persistPortfolioChange(`${cleanName} created with ${cardIds.length.toLocaleString()} cards.`);
-  return batch;
-}
+function createPortfolioBatch(name, cardIds = []) {}
 
-function saveOptimizerSelectionAsBatch() {
-  const result = activeOptimizerResult();
-  if (!result || !state.optimizerBatchSize) {
-    return toast("Choose at least one optimizer card first.");
-  }
-  const name = `${result.scenarioName} · ${state.optimizerBatchSize} cards · ${new Date().toLocaleDateString()}`;
-  createPortfolioBatch(
-    name,
-    result.ranking.slice(0, state.optimizerBatchSize).map((record) => record.id)
-  );
-}
+function saveOptimizerSelectionAsBatch() {}
 
-function markActiveBatchSubmitted() {
-  const batch = state.portfolio.batches.find(
-    (item) => item.id === state.portfolioActiveBatchId
-  );
-  if (!batch || batch.status !== "draft") return;
-  batch.status = "submitted";
-  batch.submittedAt = new Date().toISOString();
-  batchCardIds(batch.id).forEach((cardId) => {
-    const record = portfolioRecord(cardId, true);
-    if (record.status === "planned" || record.status === "inventory") {
-      record.status = "submitted";
-    }
-  });
-  persistPortfolioChange(`${batch.name} is now committed at PSA.`);
-}
+function markActiveBatchSubmitted() {}
 
-function deleteActiveDraftBatch() {
-  const batchIndex = state.portfolio.batches.findIndex(
-    (item) => item.id === state.portfolioActiveBatchId
-  );
-  const batch = state.portfolio.batches[batchIndex];
-  if (!batch || batch.status !== "draft") return;
-  batchCardIds(batch.id).forEach((cardId) => {
-    const record = portfolioRecord(cardId, true);
-    record.batchId = null;
-    if (record.status === "planned") record.status = "inventory";
-    state.portfolio.records[cardId] = normalizeCardRecord(record);
-  });
-  state.portfolio.batches.splice(batchIndex, 1);
-  state.portfolioActiveBatchId = "";
-  persistPortfolioChange(`${batch.name} deleted.`);
+
+function updatePortfolioSelectionControls() {
+  const count = state.portfolioSelectedIds.size;
+  if (el("portfolioSelectedCount")) el("portfolioSelectedCount").textContent = `${count.toLocaleString()} selected`;
+  if (el("applyBulkStatusBtn")) el("applyBulkStatusBtn").disabled = count === 0;
 }
 
 function updatePortfolioCard(row, input) {
@@ -2744,13 +2639,7 @@ function updatePortfolioCard(row, input) {
   } else if (field === "actualSalePrice") {
     record[field] = input.value === "" ? null : Math.max(0, Number(input.value) || 0);
   } else {
-    record[field] = input.value || (field === "batchId" ? null : "inventory");
-  }
-  if (field === "batchId" && record.batchId) {
-    const batch = state.portfolio.batches.find((item) => item.id === record.batchId);
-    if (record.status === "inventory" || record.status === "planned") {
-      record.status = batch?.status === "draft" ? "planned" : "submitted";
-    }
+    record[field] = input.value || "inventory";
   }
   if (field === "actualGrade" && record.actualGrade !== null) record.status = "graded";
   if (field === "actualSalePrice" && record.actualSalePrice !== null) record.status = "sold";
@@ -3387,10 +3276,10 @@ async function rerunSelectedScenario() {
       excludedFirstEditions: state.activeSuite.excludedFirstEditions || 0
     }, (progress) => setProgress(progress * 0.5, `Finding ${scenario.name} sweet spot…`), state.currentWorkers);
     const pool = state.cards.length
-      ? poolsForScenario(scenario, optimization.sweetSpot.cardCount)
+      ? poolsForScenario(scenario, optimization.sweetSpot.incrementalCount)
       : selectTopCardsByExpectedAddedValue(eligibleCards, {
           includeFirstEditions: true,
-          cardCount: optimization.sweetSpot.cardCount,
+          cardCount: optimization.sweetSpot.incrementalCount,
           config: state.activeSuite.config,
           weights: scenario.weights,
           allowChasePsa10: scenario.allowChasePsa10 !== false,
@@ -3701,22 +3590,11 @@ function bindEvents() {
     state.portfolioPage = 1;
     renderPortfolio();
   });
-  ["portfolioSearch", "portfolioStatusFilter", "portfolioBatchFilter", "portfolioPageSize"]
+  ["portfolioSearch", "portfolioStatusFilter", "portfolioPageSize"]
     .forEach((id) => el(id).addEventListener("input", () => {
       state.portfolioPage = 1;
       renderPortfolio();
     }));
-  el("portfolioActiveBatch").addEventListener("change", (event) => {
-    state.portfolioActiveBatchId = event.target.value;
-    renderPortfolio();
-  });
-  el("createBatchForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const input = el("newBatchName");
-    if (createPortfolioBatch(input.value)) input.value = "";
-  });
-  el("markBatchSubmittedBtn").addEventListener("click", markActiveBatchSubmitted);
-  el("deleteDraftBatchBtn").addEventListener("click", deleteActiveDraftBatch);
   el("portfolioRows").addEventListener("change", (event) => {
     const row = event.target.closest("[data-portfolio-card-id]");
     if (!row) return;
@@ -3726,20 +3604,21 @@ function bindEvents() {
       } else {
         state.portfolioSelectedIds.delete(row.dataset.portfolioCardId);
       }
-      renderPortfolio();
-      return;
+      updatePortfolioSelectionControls();
     }
     if (event.target.matches("[data-portfolio-field]")) {
       updatePortfolioCard(row, event.target);
+      state.portfolioSelectedIds.delete(row.dataset.portfolioCardId);
+      updatePortfolioSelectionControls();
+      persistPortfolioChange("Card record updated.");
     }
   });
   el("portfolioRows").addEventListener("click", (event) => {
-    const row = event.target.closest("[data-portfolio-card-id]");
-    if (!row) return;
-    if (event.target.closest(".save-portfolio-row")) savePortfolioRow(row);
-    if (event.target.closest(".reset-portfolio-row")) {
+    if (event.target.closest(".remove-portfolio-card")) {
+      const row = event.target.closest("[data-portfolio-card-id]");
       delete state.portfolio.records[row.dataset.portfolioCardId];
       state.portfolioSelectedIds.delete(row.dataset.portfolioCardId);
+      updatePortfolioSelectionControls();
       persistPortfolioChange("Card record reset.");
     }
   });
@@ -3747,31 +3626,44 @@ function bindEvents() {
     portfolioTableData().pageRows.forEach((card) =>
       state.portfolioSelectedIds.add(String(card.id))
     );
+    updatePortfolioSelectionControls();
     renderPortfolio();
   });
   el("clearPortfolioSelectionBtn").addEventListener("click", () => {
     state.portfolioSelectedIds.clear();
+    updatePortfolioSelectionControls();
     renderPortfolio();
   });
-  el("addSelectedToBatchBtn").addEventListener("click", () => {
-    const batch = state.portfolio.batches.find(
-      (item) => item.id === state.portfolioActiveBatchId
-    );
-    if (!batch || batch.status !== "draft") return;
-    let added = 0;
-    state.portfolioSelectedIds.forEach((cardId) => {
-      const record = portfolioRecord(cardId, true);
-      if (record.status === "inventory" || record.status === "planned") {
-        record.status = "planned";
-        record.batchId = batch.id;
-        added++;
+  el("applyBulkStatusBtn").addEventListener("click", () => {
+    const status = el("bulkStatusSelect").value;
+    if (!status) return;
+    let changed = 0;
+    state.portfolioSelectedIds.forEach((id) => {
+      let record = state.portfolio.records[id];
+      if (!record) {
+        record = {
+          estimatedGrade: null,
+          estimateConfidence: 70,
+          actualGrade: null,
+          actualSalePrice: null,
+          status: "inventory",
+          notes: ""
+        };
+        state.portfolio.records[id] = record;
+      }
+      if (record.status !== status) {
+        record.status = status;
+        changed++;
       }
     });
-    state.portfolioSelectedIds.clear();
-    persistPortfolioChange(`${added.toLocaleString()} cards added to ${batch.name}.`);
+    if (changed) {
+      persistPortfolioChange(`Updated ${changed} card${changed === 1 ? "" : "s"}.`);
+    } else {
+      toast("No changes made.");
+    }
   });
   el("portfolioPrevBtn").addEventListener("click", () => {
-    state.portfolioPage--;
+    state.portfolioPage = Math.max(1, state.portfolioPage - 1);
     renderPortfolio();
   });
   el("portfolioNextBtn").addEventListener("click", () => {
@@ -3841,10 +3733,16 @@ function bindEvents() {
   el("optimizerBatchNumber").addEventListener("input", (event) =>
     setOptimizerBatchSize(event.target.value)
   );
+  el("optimizerConditioningSlider").addEventListener("input", (event) =>
+    el("optimizerConditioningNumber").value = event.target.value
+  );
+  el("optimizerConditioningNumber").addEventListener("input", (event) =>
+    el("optimizerConditioningSlider").value = event.target.value
+  );
   el("useSweetSpotBtn").addEventListener("click", () => {
     const result = activeOptimizerResult();
     if (!result) return toast("Run the grading optimizer first.");
-    setOptimizerBatchSize(result.sweetSpot.cardCount);
+    setOptimizerBatchSize(result.sweetSpot.incrementalCount);
   });
   el("useGlobalSweetSpotBtn").addEventListener("click", () => {
     const range = findGlobalSweetRange(state.optimizerResults);
@@ -3854,10 +3752,9 @@ function bindEvents() {
   el("useBestMedianBtn").addEventListener("click", () => {
     const result = activeOptimizerResult();
     if (!result) return toast("Run the grading optimizer first.");
-    setOptimizerBatchSize(result.bestFrontier.cardCount);
+    setOptimizerBatchSize(result.bestFrontier.incrementalCount);
   });
   el("downloadOptimizerRankingBtn").addEventListener("click", downloadOptimizerRanking);
-  el("saveOptimizerBatchBtn").addEventListener("click", saveOptimizerSelectionAsBatch);
   el("salePlannerScenario").addEventListener("change", (event) => {
     state.salePlannerScenarioId = event.target.value;
     state.salePlannerGradeIndex = 0;

@@ -205,9 +205,9 @@
       <section class="panel portfolio-intro">
         <div class="section-heading">
           <div>
-            <p class="kicker">Simulation meets reality</p>
-            <h2>Operate the collection after purchase</h2>
-            <p class="context-copy">Draft the next grading batch, record what was actually sent, replace assumptions with PSA results, and log gross sale prices. Tracker data is saved locally and kept separate from the refreshable market-price CSV.</p>
+            <p class="kicker">Tracker</p>
+            <h2>My Portfolio</h2>
+            <p class="context-copy">Record estimates and actual grading results here. These will override the baseline scenario models and update EV across the app.</p>
           </div>
           <label class="field portfolio-scenario-field">
             <span>Strategy scenario</span>
@@ -215,67 +215,40 @@
           </label>
         </div>
         <div id="portfolioMetrics" class="optimizer-summary portfolio-metrics"></div>
-        <div class="weight-explainer">
-          <strong>How conditioning works:</strong>
-          Draft batches are planning aids only. Once a batch is marked sent, those cards become part of the live model’s starting point. A personal grade estimate replaces the broad scenario mix for that card; an actual PSA grade fixes the grade in every run; an actual sale price fixes its gross proceeds.
-        </div>
+        <section id="portfolioGradeStats" class="portfolio-grade-stats"></section>
       </section>
-
-      <section class="panel">
-        <div class="section-heading">
-          <div>
-            <p class="kicker">Batch control</p>
-            <h2>Plan, check, then commit</h2>
-            <p class="context-copy">A draft is compared with the highest-EV batch of the same size. Mark it sent only after the cards actually leave for PSA.</p>
-          </div>
-        </div>
-        <div class="portfolio-batch-controls">
-          <form id="createBatchForm" class="inline-form">
-            <label class="field">
-              <span>New draft batch</span>
-              <input id="newBatchName" type="text" placeholder="PSA batch · July 2026" required />
-            </label>
-            <button class="button primary" type="submit">Create batch</button>
-          </form>
-          <label class="field">
-            <span>Active batch</span>
-            <select id="portfolioActiveBatch"><option value="">Choose a batch…</option></select>
-          </label>
-          <button id="markBatchSubmittedBtn" class="button ghost" type="button" disabled>Mark sent to PSA</button>
-          <button id="deleteDraftBatchBtn" class="button danger" type="button" disabled>Delete draft</button>
-        </div>
-        <div id="portfolioStrategy" class="optimizer-callout"></div>
-        <div class="table-scroll">
-          <table class="data-table">
-            <thead><tr><th>Batch</th><th>Cards</th><th>Grades back</th><th>Actual gross sales</th><th>Strategy check</th></tr></thead>
-            <tbody id="portfolioBatchRows"></tbody>
-          </table>
-        </div>
-      </section>
-
       <section class="panel">
         <div class="section-heading">
           <div>
             <p class="kicker">Card ledger</p>
             <h2>Grade and sale records</h2>
-            <p class="context-copy">Rank and EV use the strategy scenario above. Confidence is the chance assigned to the estimated grade; the remaining probability is spread toward nearby grades.</p>
           </div>
         </div>
         <div class="portfolio-toolbar">
-          <label class="field"><span>Find cards</span><input id="portfolioSearch" type="search" placeholder="Card, set, or ID" /></label>
+          <label class="field"><span>Search</span><input id="portfolioSearch" type="search" placeholder="Card name, set, or ID" aria-label="Search portfolio cards" /></label>
           <label class="field"><span>Status</span><select id="portfolioStatusFilter"><option value="">All statuses</option><option value="inventory">Inventory</option><option value="planned">Planned</option><option value="submitted">At PSA</option><option value="graded">Graded</option><option value="sold">Sold</option></select></label>
-          <label class="field"><span>Batch</span><select id="portfolioBatchFilter"><option value="">All batches</option></select></label>
           <label class="field"><span>Rows</span><select id="portfolioPageSize"><option value="50">50</option><option value="100" selected>100</option><option value="250">250</option></select></label>
         </div>
         <div class="dataset-batch-bar">
-          <strong id="portfolioSelectedCount">0 selected</strong>
+          <span id="portfolioPageStatus" class="batch-count">0 of 0 cards</span>
+          <span class="batch-spacer"></span>
+          <span id="portfolioSelectedCount" class="batch-count">0 selected</span>
           <button id="selectPortfolioPageBtn" class="button ghost small" type="button">Select page</button>
           <button id="clearPortfolioSelectionBtn" class="button ghost small" type="button">Clear</button>
-          <button id="addSelectedToBatchBtn" class="button primary small" type="button" disabled>Add selected to active batch</button>
+          <span class="bulk-status-controls">
+            <select id="bulkStatusSelect">
+              <option value="inventory">Inventory</option>
+              <option value="planned">Planned</option>
+              <option value="submitted">At PSA</option>
+              <option value="graded">Graded</option>
+              <option value="sold">Sold</option>
+            </select>
+            <button id="applyBulkStatusBtn" class="button primary small" type="button" disabled>Set Status</button>
+          </span>
         </div>
         <div class="table-scroll portfolio-table-scroll">
           <table class="data-table portfolio-table">
-            <thead><tr><th></th><th>Card</th><th>Rank / added EV</th><th>Status</th><th>Batch</th><th>My estimate</th><th>Confidence %</th><th>Actual PSA</th><th>Actual sale price</th><th></th></tr></thead>
+            <thead><tr><th></th><th>Card</th><th>Rank / added EV</th><th>Status</th><th>My estimate</th><th>Confidence %</th><th>Actual PSA</th><th>Actual sale price</th><th></th></tr></thead>
             <tbody id="portfolioRows"></tbody>
           </table>
         </div>
@@ -321,23 +294,40 @@
             <span>PSA scenarios</span>
             <div id="optimizerScenarioChoices" class="optimizer-scenario-choices"></div>
           </div>
-          <label class="field">
-            <span>Simulations</span>
-            <select id="optimizerSimulationCount">
-              <option value="1000">1,000</option>
-              <option value="10000" selected>10,000</option>
-              <option value="100000">100,000</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Ranked batch step</span>
-            <input id="optimizerFrontierStep" type="number" value="50" min="1" />
-          </label>
-          <label class="field">
-            <span>Labor cost per graded card</span>
-            <input id="optimizerLaborCost" type="number" value="0" min="0" />
-            <small>Optional. Use this to price sorting, paperwork, shipping labor, and hassle.</small>
-          </label>
+          <div style="display:flex; flex-direction:column; gap:1.25rem;">
+            <div style="display:flex; gap:1rem; flex-wrap:wrap">
+              <label class="field">
+                <span>Simulations</span>
+                <select id="optimizerSimulationCount">
+                  <option value="1000">1,000</option>
+                  <option value="10000" selected>10,000</option>
+                  <option value="100000">100,000</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Ranked batch step</span>
+                <input id="optimizerFrontierStep" type="number" value="50" min="1" />
+              </label>
+              <label class="field">
+                <span>Labor cost per graded card</span>
+                <input id="optimizerLaborCost" type="number" value="0" min="0" />
+                <small>Optional. Use this to price sorting, paperwork, shipping labor, and hassle.</small>
+              </label>
+            </div>
+            <div class="optimizer-simulation-conditioning" style="padding-top:1rem; border-top:1px solid var(--border-medium);">
+              <span style="display:block; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; color:var(--text-muted);">Simulate already sent cards (Jump-off point)</span>
+              <div style="display:flex; gap:1rem; align-items:flex-end; flex-wrap:wrap">
+                <label class="field">
+                  <span>Simulated reality scenario</span>
+                  <select id="optimizerConditioningScenario"></select>
+                </label>
+                <div class="batch-slider-row" style="flex:1; min-width:250px; margin-bottom:0.5rem">
+                  <input id="optimizerConditioningSlider" class="batch-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Simulated sent cards" />
+                  <input id="optimizerConditioningNumber" class="batch-number" type="number" min="0" max="0" value="0" step="1" aria-label="Exact simulated sent cards" />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="optimizer-run-bar">
           <div class="work-estimate">

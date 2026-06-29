@@ -91,12 +91,12 @@ function summarize(outputs) {
   });
 }
 
-function rankedDefinitions(cardCount, step) {
+function rankedDefinitions(cardCount, step, baseCount = 0) {
   const counts = [0];
   for (let count = step; count < cardCount; count += step) counts.push(count);
   if (counts.at(-1) !== cardCount) counts.push(cardCount);
   return counts.map((cardCountValue) => ({
-    cardCount: cardCountValue,
+    cardCount: cardCountValue + baseCount,
     incrementalCount: cardCountValue
   }));
 }
@@ -132,7 +132,7 @@ export function findGlobalSweetRange(results) {
     return {
       scenarioId: result.scenarioId,
       scenarioName: result.scenarioName,
-      sweetSpotCount: result.sweetSpot.cardCount,
+      sweetSpotCount: result.sweetSpot.incrementalCount,
       positiveCeilingCount:
         firstNegative < 0 ? result.ranking.length : firstNegative
     };
@@ -169,7 +169,8 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
     simulations,
     seed,
     frontierStep = 50,
-    laborCost = 0
+    laborCost = 0,
+    conditioning = null
   } = payload;
   if (!cards?.length) throw new Error("No eligible cards are available.");
   if (!Number.isInteger(simulations) || simulations <= 0) {
@@ -178,10 +179,33 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
 
   const weights = normalizeWeights(scenario.weights);
   const chaseWeights = chaseAdjustedWeights(weights, scenario.allowChasePsa10);
+  let condWeights, condChaseWeights;
   const safeLaborCost = Math.max(0, Number(laborCost) || 0);
-  const candidateCards = cards.filter(isFutureGradingCandidate);
+  
+  let candidateCards = cards.filter(isFutureGradingCandidate);
   const committedCards = cards.filter(isCommittedGradingCard);
   const rawSoldCards = cards.filter(isRawSoldCard);
+  
+  const conditionedCardsForSim = [];
+  if (conditioning && conditioning.count > 0 && conditioning.weights) {
+    condWeights = normalizeWeights(conditioning.weights);
+    condChaseWeights = chaseAdjustedWeights(condWeights, conditioning.allowChasePsa10);
+    
+    const initialRanking = rankCardsByExpectedAddedValue(
+      candidateCards,
+      config,
+      scenario.weights,
+      scenario.allowChasePsa10,
+      safeLaborCost
+    );
+    const count = Math.min(conditioning.count, initialRanking.length);
+    const condSetIds = new Set();
+    for (let i = 0; i < count; i++) {
+      condSetIds.add(initialRanking[i].card.id);
+      conditionedCardsForSim.push(candidateCards[initialRanking[i].originalIndex]);
+    }
+    candidateCards = candidateCards.filter((c) => !condSetIds.has(c.id));
+  }
   const rawTotal = cards.reduce((sum, card) => sum + card.raw, 0);
   const rawSoldAdjustment = rawSoldCards.reduce(
     (sum, card) => sum +
@@ -214,9 +238,11 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
     expectedIncrement: record.expectedAddedValue
   }));
 
+  const baseCount = committedCards.length + conditionedCardsForSim.length;
   const frontierDefinitions = rankedDefinitions(
     candidateCards.length,
-    Math.max(1, Math.floor(Number(frontierStep) || 50))
+    Math.max(1, Math.floor(Number(frontierStep) || 50)),
+    baseCount
   );
   const frontierOutputs = makePointOutputs(frontierDefinitions, simulations);
   const frontierCheckpoints = checkpointMap(frontierOutputs);
@@ -254,6 +280,27 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
         gradeFee(realizedValue, config.fees) -
         safeLaborCost;
     }
+    
+    for (const card of conditionedCardsForSim) {
+      const cardWeights = weightsForCard(
+        card,
+        condWeights,
+        condChaseWeights,
+        conditioning.allowChasePsa10
+      );
+      const grade = chooseGrade(random(), cardWeights);
+      const listedValue = valueForGrade(card, grade);
+      const realizedValue = lognormalFromNormal(
+        listedValue,
+        config.volatilityPct,
+        volatilityEnabled ? normal() : 0
+      );
+      committedIncrement +=
+        (realizedValue - card.raw) * (1 - config.sellingFeePct) -
+        gradeFee(realizedValue, config.fees) -
+        safeLaborCost;
+    }
+
     for (let index = 0; index < candidateCards.length; index++) {
       const card = candidateCards[index];
       const cardWeights = weightsForCard(
@@ -301,6 +348,7 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
     scenarioName: scenario.name,
     weights,
     allowChasePsa10: scenario.allowChasePsa10 !== false,
+    conditioning,
     config,
     simulations,
     seed,
