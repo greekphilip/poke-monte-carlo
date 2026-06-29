@@ -205,6 +205,19 @@ An edited dataset draft is saved in IndexedDB and restored automatically only wh
 
 Any dataset change clears currently open simulation and optimizer results because they were calculated from the previous card list. Saved suites are not deleted; reopening an older suite displays the existing dataset-fingerprint mismatch warning.
 
+## PSA 7 Price Audit
+
+The **PSA 7 Price Audit** flags likely broken PriceCharting PSA 7 values before they can suppress a card's expected added value. A raw/PSA 7 inversion alone is not treated as an error. A candidate must also have:
+
+- PSA 8 at least 10% above raw;
+- a coherent PSA 8–10 price ladder;
+- at least eight clean, monotonic peers from the same set and bracketed treatment, such as Reverse Holo; and
+- a peer-supported conservative PSA 7 estimate at least 25% and $5 above the current value.
+
+Suggestions use the lower-quartile position of PSA 7 between raw and PSA 8 among those peers, then cap the result at 90% of PSA 8. High-confidence flags require a larger discrepancy and at least 12 peers. The tab shows current and suggested expected added value under any configured scenario, offers a manual PSA-restricted verification search, and can export the visible review list.
+
+No audit price is applied automatically. Accepted rows become local Dataset Editor changes, can be restored, and must be downloaded as an edited CSV to create a new source file. The app does not scrape PSA.
+
 ## Performance
 
 Scenario suites and multi-scenario optimizer comparisons run in a bounded Web Worker pool so scenarios use separate CPU cores. Each Scenario Lab run performs a ranked-frontier pass followed by the full detail simulation for the selected sweet-spot batch. The page remains responsive and both run types are cancellable. The app stores scenario card statistics in 80 profit buckets instead of retaining every card receipt from every simulation. Very large runs still require substantial CPU time; the work estimate is shown before running.

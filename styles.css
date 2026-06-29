@@ -372,6 +372,72 @@ tbody tr.clickable:hover td { background: rgba(119, 232, 181, .055); }
 }
 .decision-sell { color: var(--mint); font-weight: 900; }
 .decision-hold { color: var(--muted); }
+.price-audit-toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(170px, .7fr)) minmax(260px, 1.4fr);
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.price-audit-table-scroll { max-height: 680px; }
+.price-audit-table { min-width: 1720px; }
+.price-audit-table th:first-child,
+.price-audit-table td:first-child { width: 52px; text-align: center; }
+.price-audit-table input[type="checkbox"] {
+  width: 17px;
+  min-height: 17px;
+  accent-color: var(--mint);
+}
+.price-audit-table td:nth-child(3),
+.price-audit-table th:nth-child(3),
+.price-audit-table td:nth-child(12),
+.price-audit-table th:nth-child(12) { text-align: left; }
+.audit-card-cell { min-width: 300px; white-space: normal; }
+.audit-card-cell strong,
+.audit-card-cell small,
+.audit-positive small,
+.audit-suggestion small,
+.audit-evidence span { display: block; }
+.audit-card-cell small,
+.audit-positive small,
+.audit-suggestion small {
+  color: var(--muted);
+  margin-top: 4px;
+  font-size: 10px;
+}
+.audit-confidence {
+  display: inline-block;
+  min-width: 62px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.audit-confidence.high {
+  color: #062017;
+  border-color: var(--mint);
+  background: var(--mint);
+}
+.audit-confidence.review {
+  color: var(--gold);
+  border-color: rgba(246,200,95,.4);
+  background: rgba(246,200,95,.08);
+}
+.audit-negative,
+.audit-current-price { color: var(--coral); font-weight: 850; }
+.audit-positive,
+.audit-suggestion { color: var(--mint); font-weight: 900; }
+.audit-evidence {
+  min-width: 230px;
+  color: var(--muted);
+  line-height: 1.45;
+  white-space: normal;
+}
+.empty-cell { padding: 28px; color: var(--muted); text-align: center !important; }
 .dataset-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .dataset-refresh-meta {
   display: flex;
@@ -827,6 +893,7 @@ tbody tr.clickable:hover td { background: rgba(119, 232, 181, .055); }
   .sale-planner-controls { grid-template-columns: 1fr; }
   .tax-estimate { grid-template-columns: 1fr; }
   .raw-table-toolbar { grid-template-columns: 1fr; }
+  .price-audit-toolbar { grid-template-columns: 1fr; }
   .dataset-editor-toolbar { grid-template-columns: 1fr; }
   .refresh-token-form { grid-template-columns: 1fr; }
   .dataset-refresh-steps { grid-template-columns: 1fr; }

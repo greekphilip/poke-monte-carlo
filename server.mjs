@@ -50,6 +50,7 @@ const PUBLIC_FILES = new Set([
   "sim-worker.js",
   "optimizer-core.js",
   "optimizer-worker.js",
+  "price-audit-core.js",
   "sale-planner-core.js",
   "styles.css",
   "pricecharting.csv",
@@ -592,6 +593,48 @@ async function runDatasetRefresh() {
   }
 }
 
+function readTextBody(request, maximumBytes = 50 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    let settled = false;
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      if (settled) return;
+      body += chunk;
+      if (Buffer.byteLength(body, "utf8") > maximumBytes) {
+        settled = true;
+        reject(new Error("Dataset is too large to save."));
+        request.destroy();
+      }
+    });
+    request.on("end", () => {
+      if (!settled) resolve(body);
+    });
+    request.on("error", (error) => {
+      if (!settled) reject(error);
+    });
+  });
+}
+
+function saveActiveDataset(csvText) {
+  const rows = parseCsv(csvText);
+  if (!rows.length) throw new Error("The dataset must contain at least one card.");
+  const required = ["id", "set_name", "card_name", "ungraded", "psa_7", "psa_8", "psa_9", "psa_10"];
+  const missing = required.filter((header) => !(header in rows[0]));
+  if (missing.length) {
+    throw new Error(`The dataset is missing required columns: ${missing.join(", ")}.`);
+  }
+  const ids = rows.map((row) => String(row.id).trim());
+  if (ids.some((id) => !id)) throw new Error("Every card must have an ID.");
+  if (new Set(ids).size !== ids.length) throw new Error("Card IDs must be unique.");
+
+  const temporary = `${ACTIVE_DATASET}.editor-save.tmp`;
+  writeFileSync(temporary, csvText.endsWith("\n") ? csvText : `${csvText}\n`, "utf8");
+  renameSync(temporary, ACTIVE_DATASET);
+  fileReportCache = { signature: "", report: null, error: "" };
+  return rows.length;
+}
+
 function requestedFile(url) {
   const pathname = decodeURIComponent(new URL(url, `http://${HOST}`).pathname);
   const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
@@ -657,6 +700,25 @@ async function handleRequest(request, response) {
     refreshStatus.startedAt = new Date().toISOString();
     runDatasetRefresh();
     writeJson(response, 202, refreshStatus);
+    return;
+  }
+  if (request.method === "PUT" && url.pathname === "/api/dataset") {
+    if (refreshStatus.running) {
+      writeJson(response, 409, {
+        error: "Wait for the dataset refresh to finish before saving edits."
+      });
+      return;
+    }
+    try {
+      const csvText = await readTextBody(request);
+      const cardCount = saveActiveDataset(csvText);
+      writeJson(response, 200, {
+        cardCount,
+        message: "pricecharting.csv updated."
+      });
+    } catch (error) {
+      writeJson(response, 400, { error: error.message });
+    }
     return;
   }
   if (url.pathname.startsWith("/api/")) {

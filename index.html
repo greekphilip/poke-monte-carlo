@@ -32,6 +32,7 @@
       <button class="tab active" id="labTab" data-view="lab" type="button">Scenario Lab</button>
       <button class="tab" id="optimizerTab" data-view="optimizer" type="button">Grading Optimizer</button>
       <button class="tab" id="salePlannerTab" data-view="salePlanner" type="button">Sale Planner</button>
+      <button class="tab" id="priceAuditTab" data-view="priceAudit" type="button">PSA 7 Price Audit</button>
       <button class="tab" id="datasetEditorTab" data-view="datasetEditor" type="button">Dataset Editor</button>
       <button class="tab" id="detailTab" data-view="detail" type="button" disabled>Scenario Detail</button>
     </nav>
@@ -435,6 +436,79 @@
       </section>
     </section>
 
+    <section id="priceAuditView" class="view">
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Broken-rung detection</p>
+            <h2>PSA 7 Price Audit</h2>
+            <p class="context-copy">Find cards whose PSA 7 price is implausibly low relative to raw, PSA 8–10, and clean cards with the same set and treatment.</p>
+          </div>
+          <button id="downloadPriceAuditBtn" class="button ghost" type="button">Download visible review CSV</button>
+        </div>
+        <div class="weight-explainer">
+          <strong>Conservative by design:</strong>
+          Raw above PSA 7 is not enough to trigger a flag. PSA 8 must confirm the inversion, the PSA 8–10 ladder must remain coherent, and at least eight monotonic cards from the same set and treatment (for example, Reverse Holo) must support it. The suggestion uses the lower quartile of those peer curves and is capped at 90% of PSA 8. Nothing changes until you select cards and accept.
+        </div>
+        <section id="priceAuditSummary" class="optimizer-summary dataset-editor-summary"></section>
+
+        <div class="price-audit-toolbar">
+          <label class="field">
+            <span>EAV scenario</span>
+            <select id="priceAuditScenario"></select>
+          </label>
+          <label class="field">
+            <span>Confidence</span>
+            <select id="priceAuditConfidence">
+              <option value="high" selected>High confidence only</option>
+              <option value="review">Review tier only</option>
+              <option value="all">All candidates</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Card treatment</span>
+            <select id="priceAuditVariant">
+              <option value="all">All treatments</option>
+              <option value="reverse-holo">Reverse Holo only</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Find cards</span>
+            <input id="priceAuditSearch" type="search" placeholder="Card, set, or ID" />
+          </label>
+        </div>
+
+        <div class="dataset-batch-bar">
+          <strong id="priceAuditSelectedCount">0 selected</strong>
+          <button id="selectAuditFilteredBtn" class="button ghost small" type="button">Select all visible</button>
+          <button id="clearAuditSelectionBtn" class="button ghost small" type="button" disabled>Clear selection</button>
+          <button id="applyAuditSuggestionsBtn" class="button primary small" type="button" disabled>Accept selected suggestions</button>
+        </div>
+
+        <div class="table-scroll price-audit-table-scroll">
+          <table class="data-table price-audit-table">
+            <thead><tr>
+              <th>Select</th>
+              <th>Confidence</th>
+              <th>Card</th>
+              <th>Current EAV</th>
+              <th>Suggested EAV</th>
+              <th>Raw</th>
+              <th>PSA 7 now</th>
+              <th>PSA 7 suggestion</th>
+              <th>PSA 8</th>
+              <th>PSA 9</th>
+              <th>PSA 10</th>
+              <th>Why flagged</th>
+              <th>External check</th>
+            </tr></thead>
+            <tbody id="priceAuditRows"></tbody>
+          </table>
+        </div>
+        <p class="footnote">“Check PSA” opens a manual Google query restricted to PSA auction-price pages. The app does not scrape PSA, so it cannot trigger bans or silently mix external search snippets into your dataset.</p>
+      </section>
+    </section>
+
     <section id="datasetEditorView" class="view">
       <section class="panel dataset-refresh-panel">
         <div class="section-heading">
@@ -481,7 +555,7 @@
           <div>
             <p class="kicker">Collection workspace</p>
             <h2>Edit the card dataset</h2>
-            <p class="context-copy">Edit names and prices inline, select many cards, or delete an entire filtered group. Changes are saved locally in this browser.</p>
+            <p class="context-copy">Edit names and prices inline, select many cards, or delete an entire filtered group. Every accepted change is saved directly to pricecharting.csv.</p>
           </div>
           <div class="dataset-editor-actions">
             <button id="downloadEditedDatasetBtn" class="button ghost" type="button">Download edited CSV</button>

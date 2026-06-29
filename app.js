@@ -1,12 +1,14 @@
 import {
   RESULT_SCHEMA_VERSION,
   applySetZScores,
+  expectedAddedValue,
   isFirstEdition,
   normalizeWeights,
   rankCardsByExpectedAddedValue,
   selectTopCardsByExpectedAddedValue,
   selectedBucketStats
 } from "./sim-core.js";
+import { buildPsa7Audit } from "./price-audit-core.js";
 import {
   deleteDatasetDraft,
   deleteSuite,
@@ -53,9 +55,14 @@ const state = {
   datasetHeaders: [],
   datasetDirty: false,
   datasetEditRevision: 0,
+  datasetSaveQueue: Promise.resolve(),
   editorSelectedIds: new Set(),
   editorPage: 1,
   editorPageSize: 100,
+  auditSelectedIds: new Set(),
+  auditScenarioId: "",
+  auditCacheRevision: -1,
+  auditRecords: [],
   scenarios: PRESETS.map(([name, p7, p8, p9, p10], index) => ({
     id: `preset-${index + 1}`,
     name,
@@ -274,6 +281,8 @@ async function acceptCsv(text, name) {
     ? await fingerprintCards(cards)
     : baseFingerprint;
   state.editorSelectedIds.clear();
+  state.auditSelectedIds.clear();
+  state.auditCacheRevision = -1;
   state.editorPage = 1;
   state.datasetEditRevision++;
   invalidateResultsAfterDatasetEdit();
@@ -730,6 +739,187 @@ function renderDatasetEditor() {
   el("datasetNextPageBtn").disabled = state.editorPage >= data.pageCount;
 }
 
+function cachedPriceAuditRecords() {
+  if (state.auditCacheRevision !== state.datasetEditRevision) {
+    state.auditRecords = buildPsa7Audit(state.cards);
+    state.auditCacheRevision = state.datasetEditRevision;
+  }
+  return state.auditRecords;
+}
+
+function refreshAuditScenarioSelect() {
+  const select = el("priceAuditScenario");
+  if (!select) return null;
+  syncScenariosFromDomIfPresent();
+  const scenarios = state.scenarios.length
+    ? state.scenarios
+    : [{ id: "audit-default", name: "Balanced audit", weights: { p7: 25, p8: 25, p9: 25, p10: 1 } }];
+  if (!scenarios.some((scenario) => scenario.id === state.auditScenarioId)) {
+    state.auditScenarioId =
+      scenarios.find((scenario) => scenario.enabled)?.id ||
+      scenarios[0].id;
+  }
+  select.innerHTML = scenarios.map((scenario) =>
+    `<option value="${escapeHtml(scenario.id)}" ${scenario.id === state.auditScenarioId ? "selected" : ""}>${escapeHtml(scenario.name)}</option>`
+  ).join("");
+  return scenarios.find((scenario) => scenario.id === state.auditScenarioId);
+}
+
+function priceAuditData() {
+  const scenario = refreshAuditScenarioSelect();
+  const config = currentConfig();
+  const confidence = el("priceAuditConfidence")?.value || "high";
+  const variant = el("priceAuditVariant")?.value || "all";
+  const query = (el("priceAuditSearch")?.value || "").trim().toLowerCase();
+  const records = cachedPriceAuditRecords().map((record) => {
+    const currentEav = expectedAddedValue(
+      record.card,
+      config,
+      scenario.weights,
+      scenario.allowChasePsa10 !== false
+    );
+    const suggestedEav = expectedAddedValue(
+      { ...record.card, p7: record.suggestedP7 },
+      config,
+      scenario.weights,
+      scenario.allowChasePsa10 !== false
+    );
+    return {
+      ...record,
+      currentEav,
+      suggestedEav,
+      eavLift: suggestedEav - currentEav
+    };
+  });
+  const filtered = records.filter((record) =>
+    (confidence === "all" || record.confidence === confidence) &&
+    (variant !== "reverse-holo" || record.variant.includes("reverse holo")) &&
+    (!query || `${record.card.id} ${record.card.card} ${record.card.set}`.toLowerCase().includes(query))
+  ).sort((a, b) =>
+    b.eavLift - a.eavLift ||
+    b.severityScore - a.severityScore
+  );
+  return { records, filtered, scenario };
+}
+
+function auditVerificationUrl(card) {
+  const query = `site:psacard.com/auctionprices ${card.set} ${card.card} PSA 7`;
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+}
+
+function renderPriceAudit() {
+  if (!el("priceAuditRows")) return;
+  if (!state.cards.length) {
+    el("priceAuditRows").innerHTML = "";
+    el("priceAuditSummary").innerHTML =
+      `<article class="metric-card"><span>Dataset</span><strong>Not loaded</strong><small>Choose a CSV first</small></article>`;
+    return;
+  }
+  const { records, filtered, scenario } = priceAuditData();
+  const highCount = records.filter((record) => record.confidence === "high").length;
+  const reverseHoloCount = records.filter((record) => record.variant.includes("reverse holo")).length;
+  const negativeCount = filtered.filter((record) => record.currentEav < 0).length;
+  const totalEavLift = filtered.reduce((sum, record) => sum + record.eavLift, 0);
+  el("priceAuditSummary").innerHTML = `
+    <article class="metric-card"><span>High-confidence flags</span><strong>${highCount.toLocaleString()}</strong><small>Large, peer-confirmed broken rungs</small></article>
+    <article class="metric-card"><span>All review candidates</span><strong>${records.length.toLocaleString()}</strong><small>No prices changed automatically</small></article>
+    <article class="metric-card"><span>Reverse holos</span><strong>${reverseHoloCount.toLocaleString()}</strong><small>Among all audit candidates</small></article>
+    <article class="metric-card"><span>Visible EAV recovery</span><strong>${money(totalEavLift)}</strong><small>${negativeCount.toLocaleString()} currently negative under ${escapeHtml(scenario.name)}</small></article>`;
+  el("priceAuditRows").innerHTML = filtered.map((record) => {
+    const id = String(record.card.id);
+    const checked = state.auditSelectedIds.has(id);
+    return `<tr data-audit-card-id="${escapeHtml(id)}">
+      <td><input data-audit-select type="checkbox" ${checked ? "checked" : ""} aria-label="Select ${escapeHtml(record.card.card)} suggestion" /></td>
+      <td><span class="audit-confidence ${record.confidence}">${record.confidence === "high" ? "High" : "Review"}</span></td>
+      <td class="audit-card-cell"><strong>${escapeHtml(record.card.card)}</strong><small>${escapeHtml(record.card.set)} · ID ${escapeHtml(record.card.id)}</small></td>
+      <td class="${record.currentEav < 0 ? "audit-negative" : ""}">${money(record.currentEav)}</td>
+      <td class="audit-positive">${money(record.suggestedEav)} <small>+${money(record.eavLift)}</small></td>
+      <td>${money(record.card.raw)}</td>
+      <td class="audit-current-price">${money(record.card.p7)}</td>
+      <td class="audit-suggestion">${money(record.suggestedP7)} <small>model median ${money(record.modelP7)}</small></td>
+      <td>${money(record.card.p8)}</td>
+      <td>${money(record.card.p9)}</td>
+      <td>${money(record.card.p10)}</td>
+      <td class="audit-evidence">${record.reasons.map((reason) => `<span>${escapeHtml(reason)}</span>`).join("")}</td>
+      <td><a class="button ghost small" href="${escapeHtml(auditVerificationUrl(record.card))}" target="_blank" rel="noreferrer">Check PSA</a></td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="13" class="empty-cell">No cards match these audit filters.</td></tr>`;
+  const visibleIds = new Set(filtered.map((record) => String(record.card.id)));
+  const selectedVisible = [...state.auditSelectedIds].filter((id) => visibleIds.has(id)).length;
+  el("priceAuditSelectedCount").textContent =
+    `${state.auditSelectedIds.size.toLocaleString()} selected · ${filtered.length.toLocaleString()} visible`;
+  el("applyAuditSuggestionsBtn").disabled = !state.auditSelectedIds.size;
+  el("clearAuditSelectionBtn").disabled = !state.auditSelectedIds.size;
+  el("selectAuditFilteredBtn").disabled =
+    !filtered.length || selectedVisible === filtered.length;
+}
+
+async function applyAuditSuggestions() {
+  if (state.running || state.optimizerRunning) {
+    return toast("Cancel the running simulation before editing the dataset.");
+  }
+  const selected = cachedPriceAuditRecords().filter((record) =>
+    state.auditSelectedIds.has(String(record.card.id))
+  );
+  if (!selected.length) return;
+  if (!confirm(
+    `Replace PSA 7 for ${selected.length.toLocaleString()} selected card${selected.length === 1 ? "" : "s"} with the conservative audit suggestion and save it to pricecharting.csv?`
+  )) return;
+  selected.forEach((record) => {
+    const card = state.cards.find((item) => String(item.id) === String(record.card.id));
+    if (!card) return;
+    card.p7 = record.suggestedP7;
+    card.sourceRow = { ...(card.sourceRow || {}), psa_7: card.p7 };
+  });
+  const count = selected.length;
+  await finalizeDatasetEdit(
+    `${count.toLocaleString()} conservative PSA 7 suggestion${count === 1 ? "" : "s"} accepted.`
+  );
+  renderPriceAudit();
+}
+
+function downloadPriceAudit() {
+  const { filtered, scenario } = priceAuditData();
+  if (!filtered.length) return toast("No visible audit rows to download.");
+  const rows = [
+    [
+      "confidence", "id", "set_name", "card_name", "variant",
+      "current_expected_added_value", "suggested_expected_added_value", "eav_recovery",
+      "ungraded", "current_psa_7", "suggested_psa_7", "model_median_psa_7",
+      "psa_8", "psa_9", "psa_10", "peer_count", "verification_url"
+    ],
+    ...filtered.map((record) => [
+      record.confidence,
+      record.card.id,
+      record.card.set,
+      record.card.card,
+      record.variant,
+      record.currentEav,
+      record.suggestedEav,
+      record.eavLift,
+      record.card.raw,
+      record.card.p7,
+      record.suggestedP7,
+      record.modelP7,
+      record.card.p8,
+      record.card.p9,
+      record.card.p10,
+      record.peerCount,
+      auditVerificationUrl(record.card)
+    ])
+  ];
+  const blob = new Blob(
+    [rows.map((row) => row.map(csvCell).join(",")).join("\n")],
+    { type: "text/csv;charset=utf-8" }
+  );
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${scenario.name.replace(/[^a-z0-9]+/gi, "-") || "scenario"}-psa7-price-audit.csv`;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function invalidateResultsAfterDatasetEdit() {
   state.activeSuite = null;
   state.selectedScenarioId = null;
@@ -777,27 +967,77 @@ function scheduleDatasetDraftSave() {
   }, 350);
 }
 
+function datasetCsv(cards = state.cards) {
+  const requiredHeaders = [
+    "id", "set_name", "card_name", "ungraded",
+    "psa_7", "psa_8", "psa_9", "psa_10", "set_z_score"
+  ];
+  const headers = [...new Set([...state.datasetHeaders, ...requiredHeaders])];
+  const rows = [
+    headers,
+    ...cards.map((card) => {
+      const row = {
+        ...(card.sourceRow || {}),
+        id: card.id,
+        set_name: card.set,
+        card_name: card.card,
+        ungraded: card.raw,
+        psa_7: card.p7,
+        psa_8: card.p8,
+        psa_9: card.p9,
+        psa_10: card.p10,
+        set_z_score: card.setZScore
+      };
+      return headers.map((header) => row[header] ?? "");
+    })
+  ];
+  return rows.map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function persistDatasetToCsv(cards) {
+  const csv = datasetCsv(cards);
+  const save = async () => {
+    const response = await fetch("/api/dataset", {
+      method: "PUT",
+      headers: { "Content-Type": "text/csv; charset=utf-8" },
+      body: csv
+    });
+    await readApiResponse(response, "Save dataset");
+  };
+  state.datasetSaveQueue = state.datasetSaveQueue.catch(() => {}).then(save);
+  return state.datasetSaveQueue;
+}
+
 async function finalizeDatasetEdit(message) {
   const revision = ++state.datasetEditRevision;
+  state.auditCacheRevision = -1;
+  state.auditSelectedIds.clear();
   state.datasetDirty = datasetHasChanges();
   invalidateResultsAfterDatasetEdit();
   updateCollectionSummary();
   renderDatasetEditor();
   scheduleDatasetDraftSave();
-  const cardsSnapshot = state.cards;
+  const cardsSnapshot = structuredClone(state.cards);
   const fingerprint = await fingerprintCards(cardsSnapshot);
   if (
-    cardsSnapshot === state.cards &&
     revision === state.datasetEditRevision
   ) {
     state.datasetFingerprint = fingerprint;
   }
-  el("csvStatus").textContent = state.datasetDirty
-    ? "Edited collection active"
-    : "Collection loaded";
-  el("csvDetail").textContent =
-    `${state.cards.length.toLocaleString()} cards from ${state.datasetName}${state.datasetDirty ? " · saved locally" : ""}`;
-  if (message) toast(message);
+  try {
+    await persistDatasetToCsv(cardsSnapshot);
+    if (revision === state.datasetEditRevision) {
+      el("csvStatus").textContent = "Collection saved";
+      el("csvDetail").textContent =
+        `${state.cards.length.toLocaleString()} cards · pricecharting.csv updated`;
+    }
+    if (message) toast(message);
+  } catch (error) {
+    el("csvStatus").textContent = "Disk save failed";
+    el("csvDetail").textContent =
+      `${state.cards.length.toLocaleString()} cards · browser fallback saved · ${error.message}`;
+    toast("Edit kept in the browser, but pricecharting.csv could not be updated.");
+  }
 }
 
 function editDatasetCard(row, input) {
@@ -845,7 +1085,7 @@ function deleteSelectedDatasetCards() {
   );
   state.editorSelectedIds.clear();
   recalculateAllSetZScores();
-  finalizeDatasetEdit(`${count.toLocaleString()} cards deleted.`);
+  finalizeDatasetEdit(`${count.toLocaleString()} cards deleted and saved to pricecharting.csv.`);
 }
 
 async function restoreOriginalDataset() {
@@ -854,48 +1094,17 @@ async function restoreOriginalDataset() {
     return;
   }
   state.cards = structuredClone(state.baseCards);
-  state.datasetEditRevision++;
-  state.datasetFingerprint = state.baseDatasetFingerprint;
-  state.datasetDirty = false;
   state.editorSelectedIds.clear();
+  state.auditSelectedIds.clear();
+  state.auditCacheRevision = -1;
   state.editorPage = 1;
-  await deleteDatasetDraft().catch(() => {});
-  invalidateResultsAfterDatasetEdit();
-  updateCollectionSummary();
-  renderDatasetEditor();
-  el("csvStatus").textContent = "Collection loaded";
-  el("csvDetail").textContent =
-    `${state.cards.length.toLocaleString()} cards from ${state.datasetName}`;
-  toast("Original CSV restored.");
+  await finalizeDatasetEdit("The dataset loaded at startup was restored and saved to pricecharting.csv.");
 }
 
 function downloadEditedDataset() {
   if (!state.cards.length) return toast("Load the collection CSV first.");
-  const requiredHeaders = [
-    "id", "set_name", "card_name", "ungraded",
-    "psa_7", "psa_8", "psa_9", "psa_10", "set_z_score"
-  ];
-  const headers = [...new Set([...state.datasetHeaders, ...requiredHeaders])];
-  const rows = [
-    headers,
-    ...state.cards.map((card) => {
-      const row = {
-        ...(card.sourceRow || {}),
-        id: card.id,
-        set_name: card.set,
-        card_name: card.card,
-        ungraded: card.raw,
-        psa_7: card.p7,
-        psa_8: card.p8,
-        psa_9: card.p9,
-        psa_10: card.p10,
-        set_z_score: card.setZScore
-      };
-      return headers.map((header) => row[header] ?? "");
-    })
-  ];
   const blob = new Blob(
-    [rows.map((row) => row.map(csvCell).join(",")).join("\n")],
+    [datasetCsv()],
     { type: "text/csv;charset=utf-8" }
   );
   const url = URL.createObjectURL(blob);
@@ -2128,6 +2337,7 @@ function switchView(view) {
     updateOptimizerWorkEstimate();
   }
   if (view === "salePlanner") refreshSalePlanner();
+  if (view === "priceAudit") renderPriceAudit();
   if (view === "datasetEditor") renderDatasetEditor();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -2873,6 +3083,31 @@ function bindEvents() {
       toast(error.message);
     }
   });
+  ["priceAuditScenario", "priceAuditConfidence", "priceAuditVariant", "priceAuditSearch"]
+    .forEach((id) => el(id).addEventListener("input", (event) => {
+      if (id === "priceAuditScenario") state.auditScenarioId = event.target.value;
+      renderPriceAudit();
+    }));
+  el("priceAuditRows").addEventListener("change", (event) => {
+    if (!event.target.matches("[data-audit-select]")) return;
+    const row = event.target.closest("[data-audit-card-id]");
+    if (!row) return;
+    if (event.target.checked) state.auditSelectedIds.add(row.dataset.auditCardId);
+    else state.auditSelectedIds.delete(row.dataset.auditCardId);
+    renderPriceAudit();
+  });
+  el("selectAuditFilteredBtn").addEventListener("click", () => {
+    priceAuditData().filtered.forEach((record) =>
+      state.auditSelectedIds.add(String(record.card.id))
+    );
+    renderPriceAudit();
+  });
+  el("clearAuditSelectionBtn").addEventListener("click", () => {
+    state.auditSelectedIds.clear();
+    renderPriceAudit();
+  });
+  el("applyAuditSuggestionsBtn").addEventListener("click", applyAuditSuggestions);
+  el("downloadPriceAuditBtn").addEventListener("click", downloadPriceAudit);
   ["datasetEditorSearch", "datasetEditorSort", "datasetEditorPageSize"]
     .forEach((id) => el(id).addEventListener("input", () => {
       state.editorPage = 1;
