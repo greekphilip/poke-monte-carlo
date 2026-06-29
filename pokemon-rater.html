@@ -102,7 +102,9 @@
       white-space: nowrap;
       margin-top: 2px;
     }
-    .badge { color: var(--muted); font-size: 12px; align-self: center; white-space: nowrap; }
+    .badge { color: var(--muted); font-size: 12px; align-self: center; white-space: nowrap; text-align: right; }
+    .badge.hot { color: #fff; }
+    .rank-bucket { display: block; margin-bottom: 2px; font-size: 11px; font-weight: 800; color: #fff; }
     .selected h1 {
       margin: 0 0 3px;
       font-size: 18px;
@@ -143,6 +145,7 @@
     .settings-grid label span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; }
     .scenario-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
     .scenario-grid label span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+    .scenario-effective { grid-column: 1 / -1; min-height: 16px; }
     .danger { color: #fff; border-style: dashed; }
     .empty {
       min-height: 110px;
@@ -216,12 +219,11 @@
       <section id="setupView" class="view">
         <div class="stack">
           <div class="panel stack">
-            <input id="csvInput" type="file" accept=".csv,text/csv" />
+            <input id="csvInput" type="file" accept=".csv,.json,text/csv,application/json" />
             <div class="quick">
               <button id="exportJson">Export log</button>
               <button id="exportCsv">Export CSV</button>
             </div>
-            <input id="jsonInput" type="file" accept=".json,application/json" />
           </div>
 
           <div class="panel stack">
@@ -249,14 +251,17 @@
               <label><span>Bal 8</span><input id="balanced_w8" inputmode="numeric" type="number" value="30" /></label>
               <label><span>Bal 9</span><input id="balanced_w9" inputmode="numeric" type="number" value="18" /></label>
               <label><span>Bal 10</span><input id="balanced_w10" inputmode="numeric" type="number" value="2" /></label>
+              <small id="balancedEffective" class="scenario-effective"></small>
               <label><span>Pess 7</span><input id="pessimistic_w7" inputmode="numeric" type="number" value="60" /></label>
               <label><span>Pess 8</span><input id="pessimistic_w8" inputmode="numeric" type="number" value="30" /></label>
               <label><span>Pess 9</span><input id="pessimistic_w9" inputmode="numeric" type="number" value="9" /></label>
               <label><span>Pess 10</span><input id="pessimistic_w10" inputmode="numeric" type="number" value="1" /></label>
+              <small id="pessimisticEffective" class="scenario-effective"></small>
               <label><span>Opt 7</span><input id="optimistic_w7" inputmode="numeric" type="number" value="25" /></label>
               <label><span>Opt 8</span><input id="optimistic_w8" inputmode="numeric" type="number" value="45" /></label>
               <label><span>Opt 9</span><input id="optimistic_w9" inputmode="numeric" type="number" value="27" /></label>
               <label><span>Opt 10</span><input id="optimistic_w10" inputmode="numeric" type="number" value="3" /></label>
+              <small id="optimisticEffective" class="scenario-effective"></small>
             </div>
             <button id="saveSettings">Save setup</button>
           </div>
@@ -491,6 +496,16 @@
       return { p7: values[0] / total, p8: values[1] / total, p9: values[2] / total, p10: values[3] / total };
     }
 
+    function renderEffectiveWeights() {
+      for (const scenarioId of ["balanced", "pessimistic", "optimistic"]) {
+        const weights = normalizeWeights(weightsForScenario(scenarioId));
+        const text = [weights.p7, weights.p8, weights.p9, weights.p10]
+          .map((value) => `${Math.round(value * 100)}%`)
+          .join(" / ");
+        $(`${scenarioId}Effective`).textContent = text;
+      }
+    }
+
     function gradeFee(value, fees) {
       if (value <= 1500) return fees.fee1500;
       if (value <= 2500) return fees.fee2500;
@@ -576,6 +591,18 @@
         .sort((a, b) => b.ev - a.ev || b.card.p10 - a.card.p10 || a.index - b.index)
         .slice(0, limit)
         .map((record, index) => ({ ...record, rank: index + 1 }));
+    }
+
+    function globalMixedRanking() {
+      const config = readSettings();
+      return state.cards
+        .map((card, index) => ({
+          card,
+          ev: expectedAddedValue(card, config, { p7: 1, p8: 1, p9: 1, p10: 1 }),
+          index
+        }))
+        .sort((a, b) => b.ev - a.ev || b.card.p10 - a.card.p10 || a.index - b.index)
+        .map((record, index) => ({ ...record, globalRank: index + 1 }));
     }
 
     function percentile(sorted, p) {
@@ -736,12 +763,26 @@
       bindCardButtons(results);
     }
 
-    function cardButton(card, rank = "") {
+    function rankBucket(rank) {
+      if (rank <= 25) return "Top 25";
+      if (rank <= 50) return "Top 50";
+      if (rank <= 100) return "Top 100";
+      if (rank <= 150) return "Top 150";
+      if (rank <= 200) return "Top 200";
+      if (rank <= 300) return "Top 300";
+      if (rank <= 600) return "Top 600";
+      if (rank <= 900) return "Top 900";
+      if (rank <= 1200) return "Top 1200";
+      if (rank <= 1500) return "Top 1500";
+      return "";
+    }
+
+    function cardButton(card, rank = "", hot = false) {
       const estimate = state.estimates[card.id];
       return `
         <button class="card-button" data-card-id="${escapeHtml(card.id)}">
           <span><b>${escapeHtml(card.card)}</b><small>${escapeHtml(card.set)}</small></span>
-          <span class="badge">${estimate ? `PSA ${estimate.grade}` : rank}</span>
+          <span class="badge ${hot ? "hot" : ""}">${estimate ? `PSA ${estimate.grade}` : rank}</span>
         </button>
       `;
     }
@@ -764,12 +805,17 @@
         return;
       }
       const limit = Number($("topLimit").value) || 600;
-      state.topRanking = rankRemaining({ p7: 1, p8: 1, p9: 1, p10: 1 }, limit);
-      const unseenInLimit = state.topRanking.filter((record) => !state.estimates[record.card.id]).length;
-      $("topSummary").textContent = `${unseenInLimit.toLocaleString()} unrated in top ${limit} · mixed EV`;
+      state.topRanking = globalMixedRanking().slice(0, limit);
+      const unseen = state.topRanking.filter((record) => !state.estimates[record.card.id]);
+      $("topSummary").textContent = `${unseen.length.toLocaleString()} unrated in global top ${limit} · mixed EV`;
       $("topList").innerHTML = state.topRanking
+        .filter((record) => !state.estimates[record.card.id])
         .slice(0, 80)
-        .map((record) => cardButton(record.card, `#${record.rank}`))
+        .map((record) => cardButton(
+          record.card,
+          `${rankBucket(record.globalRank) ? `<span class="rank-bucket">${rankBucket(record.globalRank)}</span>` : ""}#${record.globalRank}`,
+          record.globalRank <= 300
+        ))
         .join("") || "<div class=\"empty\">Nothing left</div>";
       bindCardButtons($("topList"));
     }
@@ -793,8 +839,16 @@
     function showView(id) {
       document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === id));
       document.querySelectorAll("nav button").forEach((button) => button.classList.toggle("active", button.dataset.view === id));
+      const hash = id.replace(/View$/, "");
+      if (location.hash.slice(1) !== hash) history.replaceState(null, "", `#${hash}`);
       if (id === "topView") renderTop();
       if (id === "moneyView") renderMoney();
+    }
+
+    function viewFromHash() {
+      const key = location.hash.slice(1).toLowerCase();
+      const map = { log: "logView", top: "topView", money: "moneyView", setup: "setupView" };
+      return map[key] || "logView";
     }
 
     function exportDownload(name, blob) {
@@ -839,35 +893,38 @@
       updateStatus();
       renderSelected();
       renderSearch();
+      renderEffectiveWeights();
+      showView(viewFromHash());
     }
 
     document.querySelectorAll("nav button").forEach((button) =>
       button.addEventListener("click", () => showView(button.dataset.view))
     );
+    window.addEventListener("hashchange", () => showView(viewFromHash()));
     $("searchInput").addEventListener("input", renderSearch);
+    document.querySelectorAll(".scenario-grid input").forEach((input) =>
+      input.addEventListener("input", renderEffectiveWeights)
+    );
     $("csvInput").addEventListener("change", async (event) => {
       const file = event.target.files?.[0];
       if (!file) return;
-      state.cards = normalizeRows(parseCsv(await file.text()));
-      state.estimates = {};
-      state.selectedId = "";
+      const text = await file.text();
+      if (file.name.toLowerCase().endsWith(".json")) {
+        const imported = JSON.parse(text);
+        if (imported.estimates) state.estimates = imported.estimates;
+        if (imported.settings) applySettings(imported.settings);
+      } else {
+        state.cards = normalizeRows(parseCsv(text));
+        state.estimates = {};
+        state.selectedId = "";
+      }
       state.model = null;
+      renderEffectiveWeights();
       scheduleSave();
       updateStatus();
       renderSelected();
       renderSearch();
       showView("logView");
-    });
-    $("jsonInput").addEventListener("change", async (event) => {
-      const file = event.target.files?.[0];
-      if (!file) return;
-      const imported = JSON.parse(await file.text());
-      if (imported.estimates) state.estimates = imported.estimates;
-      if (imported.settings) applySettings(imported.settings);
-      scheduleSave();
-      updateStatus();
-      renderSelected();
-      renderSearch();
     });
     $("exportJson").addEventListener("click", () => {
       exportDownload("field-estimates.json", new Blob([JSON.stringify({
