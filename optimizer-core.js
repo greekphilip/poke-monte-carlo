@@ -72,7 +72,7 @@ function fillPrefixSeries(outputs, checkpoints, orderedIndexes, contributions, b
 }
 
 function summarize(outputs) {
-  return outputs.map(({ profits, incrementalCount, ...definition }) => {
+  return outputs.map(({ profits, ...definition }) => {
     profits.sort();
     let total = 0;
     let losses = 0;
