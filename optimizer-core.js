@@ -218,6 +218,27 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
     config.acquisitionCost +
     rawSoldAdjustment;
 
+  // ── Deterministic increment: cards with known outcomes ──
+  // Committed cards with actual grades or actual sales are fully known.
+  let deterministicCommittedIncrement = 0;
+  const stochasticCommittedCards = [];
+  for (const card of committedCards) {
+    const hasActualGrade = [7, 8, 9, 10].includes(Number(card.actualGrade));
+    const hasActualSale = card.actualSalePrice !== null &&
+      card.actualSalePrice !== undefined;
+    if (hasActualGrade || hasActualSale) {
+      const gradedValue = hasActualSale
+        ? Number(card.actualSalePrice)
+        : valueForGrade(card, [7, 8, 9, 10].indexOf(Number(card.actualGrade)));
+      deterministicCommittedIncrement +=
+        (gradedValue - card.raw) * (1 - config.sellingFeePct) -
+        gradeFee(gradedValue, config.fees) -
+        safeLaborCost;
+    } else {
+      stochasticCommittedCards.push(card);
+    }
+  }
+
   const ranking = rankCardsByExpectedAddedValue(
     candidateCards,
     config,
@@ -253,40 +274,45 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
   const rankedIndexes = ranking.map((record) => record.index);
   const volatilityEnabled = Number(config.volatilityPct) > 0;
 
+  // ── Pre-grade conditioned cards ONCE with the seed ──
+  // These are "simulate already sent" cards. Assign grades once so they
+  // are treated as deterministic from here on (no P5/P95 at the base).
+  let conditionedIncrement = 0;
+  for (const card of conditionedCardsForSim) {
+    const cardWeights = weightsForCard(
+      card,
+      condWeights,
+      condChaseWeights,
+      conditioning.allowChasePsa10
+    );
+    const grade = chooseGrade(random(), cardWeights);
+    const listedValue = valueForGrade(card, grade);
+    const realizedValue = lognormalFromNormal(
+      listedValue,
+      config.volatilityPct,
+      volatilityEnabled ? normal() : 0
+    );
+    conditionedIncrement +=
+      (realizedValue - card.raw) * (1 - config.sellingFeePct) -
+      gradeFee(realizedValue, config.fees) -
+      safeLaborCost;
+  }
+
+  // Fixed base for every simulation run — no variance from these cards
+  const fixedBaseProfit = staticBaseProfit +
+    deterministicCommittedIncrement +
+    conditionedIncrement;
+  const deterministicProfit = fixedBaseProfit;
+
   for (let run = 0; run < simulations; run++) {
-    let committedIncrement = 0;
-    for (const card of committedCards) {
+    // Only committed cards WITHOUT actual grades are stochastic per run
+    let stochasticIncrement = 0;
+    for (const card of stochasticCommittedCards) {
       const cardWeights = weightsForCard(
         card,
         weights,
         chaseWeights,
         scenario.allowChasePsa10
-      );
-      const grade = chooseGrade(random(), cardWeights);
-      const hasActualSale = card.actualSalePrice !== null &&
-        card.actualSalePrice !== undefined;
-      const listedValue = hasActualSale
-        ? Number(card.actualSalePrice)
-        : valueForGrade(card, grade);
-      const realizedValue = hasActualSale
-        ? listedValue
-        : lognormalFromNormal(
-            listedValue,
-            config.volatilityPct,
-            volatilityEnabled ? normal() : 0
-          );
-      committedIncrement +=
-        (realizedValue - card.raw) * (1 - config.sellingFeePct) -
-        gradeFee(realizedValue, config.fees) -
-        safeLaborCost;
-    }
-    
-    for (const card of conditionedCardsForSim) {
-      const cardWeights = weightsForCard(
-        card,
-        condWeights,
-        condChaseWeights,
-        conditioning.allowChasePsa10
       );
       const grade = chooseGrade(random(), cardWeights);
       const listedValue = valueForGrade(card, grade);
@@ -295,7 +321,7 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
         config.volatilityPct,
         volatilityEnabled ? normal() : 0
       );
-      committedIncrement +=
+      stochasticIncrement +=
         (realizedValue - card.raw) * (1 - config.sellingFeePct) -
         gradeFee(realizedValue, config.fees) -
         safeLaborCost;
@@ -326,7 +352,7 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
       frontierCheckpoints,
       rankedIndexes,
       contributions,
-      staticBaseProfit + committedIncrement,
+      fixedBaseProfit + stochasticIncrement,
       run
     );
 
@@ -359,6 +385,7 @@ export async function optimizeGrading(payload, onProgress = () => {}, shouldCanc
     excludedFirstEditions: payload.excludedFirstEditions || 0,
     laborCost: safeLaborCost,
     baseProfit: frontier[0].median,
+    deterministicProfit,
     frontier,
     bestFrontier,
     sweetSpot: findSweetSpot(frontier),

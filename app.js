@@ -1726,7 +1726,7 @@ function setOptimizerProgress(progress, message) {
   el("optimizerRunStatus").textContent = message;
 }
 
-function optimizerSeriesChart(containerId, series, globalRange = null, conditioningCount = 0) {
+function optimizerSeriesChart(containerId, series, globalRange = null, conditioningCount = 0, deterministicProfit = null) {
   const container = el(containerId);
   const points = series.flatMap((item) => item.points);
   if (!points.length) {
@@ -1794,9 +1794,15 @@ function optimizerSeriesChart(containerId, series, globalRange = null, condition
   const conditioningMarkup = conditioningCount > 0
     ? (() => {
         const condX = x(conditioningCount);
+        const dotMarkup = deterministicProfit !== null
+          ? `<circle cx="${condX}" cy="${y(deterministicProfit)}" r="10" fill="#f4f8f5" stroke="var(--text-muted)" stroke-width="3" />
+             <circle cx="${condX}" cy="${y(deterministicProfit)}" r="5" fill="var(--text-muted)" />
+             <text class="global-sweet-label" x="${condX}" y="${y(deterministicProfit) - 16}" text-anchor="middle" fill="var(--text-muted)" font-weight="700">${money(deterministicProfit)}</text>`
+          : "";
         return `
           <line class="global-sweet-boundary" x1="${condX}" x2="${condX}" y1="${margin.top}" y2="${height - margin.bottom}" stroke-dasharray="6,4" stroke="var(--text-muted)" stroke-width="2" />
-          <text class="global-sweet-label" x="${condX}" y="${margin.top + 32}" text-anchor="middle" fill="var(--text-muted)">WHERE I'M AT NOW (${conditioningCount.toLocaleString()})</text>`;
+          <text class="global-sweet-label" x="${condX}" y="${margin.top + 32}" text-anchor="middle" fill="var(--text-muted)">WHERE I'M AT NOW (${conditioningCount.toLocaleString()})</text>
+          ${dotMarkup}`;
       })()
     : "";
 
@@ -1932,7 +1938,10 @@ function renderOptimizerResults() {
     ? `<span><i class="global-range-swatch"></i>Global sweet range</span>`
     : "");
   const conditioningCount = state.optimizerResults[0]?.conditioning?.count || 0;
-  optimizerSeriesChart("frontierChart", series, globalRange, conditioningCount);
+  const deterministicProfit = conditioningCount > 0
+    ? state.optimizerResults[0]?.deterministicProfit ?? null
+    : null;
+  optimizerSeriesChart("frontierChart", series, globalRange, conditioningCount, deterministicProfit);
   if (globalRange?.hasOverlap) {
     el("globalFrontierExplanation").innerHTML =
       `<strong>Global recommendation: ${globalRange.recommendedCount.toLocaleString()} cards.</strong> ` +
