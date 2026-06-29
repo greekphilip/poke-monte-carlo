@@ -99,10 +99,7 @@ The **Portfolio Tracker** stores real-world execution data separately from `pric
 
 Draft batches are planning aids. The tracker compares a draft with the highest-expected-value batch of the same size and reports omissions and negative-EV selections. A batch becomes part of the model only after **Mark sent to PSA** is used.
 
-Scenario Lab’s **Modeling mode** controls how this data affects simulations:
-
-- **Pre-purchase / ignore tracker** preserves the original acquisition model.
-- **Live portfolio / use tracker** starts every frontier at the current committed portfolio state. Submitted cards remain uncertain, graded cards use their actual grade in every run, sold cards use their actual gross proceeds, and only unsent cards appear on the additional-grading frontier.
+Scenario Lab, Grading Optimizer, and Sale Planner always include Portfolio Tracker data. Submitted cards remain uncertain, graded cards use their actual grade in every run, sold cards use their actual gross proceeds, and only unsent cards appear on the additional-grading frontier.
 
 A personal estimate overrides scenario weights for that card. The entered confidence is assigned to the estimated grade; the remaining probability is distributed toward the other grades with nearer grades receiving more weight. Once an actual grade is recorded, it replaces both the personal estimate and the scenario in every simulation.
 

@@ -1,0 +1,910 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <title>Field Evaluator POC</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #000;
+      --fg: #f5f5f5;
+      --muted: #9a9a9a;
+      --line: #303030;
+      --panel: #0b0b0b;
+      --tap: #191919;
+      --good: #fff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--fg); }
+    body { overscroll-behavior: none; }
+    button, input, select {
+      font: inherit;
+      color: var(--fg);
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+    button { min-height: 44px; padding: 10px 12px; touch-action: manipulation; }
+    input, select { width: 100%; min-height: 46px; padding: 10px; }
+    input[type="file"] { border: 0; padding-inline: 0; }
+    small { color: var(--muted); }
+    .app { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr auto; }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: #000;
+      border-bottom: 1px solid var(--line);
+      padding: calc(8px + env(safe-area-inset-top)) 10px 8px;
+    }
+    .status { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .status strong { font-size: 16px; letter-spacing: 0; }
+    .status span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    main { padding: 10px 10px 86px; }
+    nav {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 10;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      padding-bottom: env(safe-area-inset-bottom);
+      background: var(--line);
+      border-top: 1px solid var(--line);
+    }
+    nav button {
+      border: 0;
+      border-radius: 0;
+      background: #050505;
+      color: var(--muted);
+      min-height: 58px;
+      font-size: 13px;
+    }
+    nav button.active { background: #111; color: var(--fg); }
+    .view { display: none; }
+    .view.active { display: block; }
+    .stack { display: grid; gap: 10px; }
+    .row { display: flex; align-items: center; gap: 8px; }
+    .row > * { min-width: 0; }
+    .grow { flex: 1; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+    }
+    .results { display: grid; gap: 6px; }
+    .card-button {
+      width: 100%;
+      min-height: 58px;
+      text-align: left;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      background: var(--tap);
+    }
+    .card-button b {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 650;
+    }
+    .card-button small {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-top: 2px;
+    }
+    .badge { color: var(--muted); font-size: 12px; align-self: center; white-space: nowrap; }
+    .selected h1 {
+      margin: 0 0 3px;
+      font-size: 18px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+    .selected p { margin: 0; color: var(--muted); font-size: 13px; }
+    .grades { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 10px; }
+    .grades button {
+      min-height: 62px;
+      font-size: 22px;
+      background: var(--tap);
+    }
+    .grades button.clear { font-size: 14px; color: var(--muted); }
+    .grades button.active { outline: 2px solid var(--fg); }
+    .quick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .top-list { display: grid; gap: 6px; }
+    .hold {
+      min-height: 190px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      user-select: none;
+      -webkit-user-select: none;
+      background: #000;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 16px;
+      touch-action: none;
+    }
+    .hold.hidden-money .money-grid { visibility: hidden; }
+    .hold-label { color: var(--muted); font-size: 15px; }
+    .money-grid { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .metric { text-align: left; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+    .metric small { display: block; font-size: 11px; text-transform: uppercase; }
+    .metric b { display: block; margin-top: 3px; font-size: clamp(20px, 7vw, 32px); letter-spacing: 0; }
+    .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .settings-grid label span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; }
+    .scenario-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .scenario-grid label span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+    .danger { color: #fff; border-style: dashed; }
+    .empty {
+      min-height: 110px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      text-align: center;
+      border: 1px dashed var(--line);
+      border-radius: 6px;
+      padding: 14px;
+    }
+    .tiny { font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="status">
+        <strong>Field</strong>
+        <span id="statusLine">No dataset</span>
+      </div>
+    </header>
+
+    <main>
+      <section id="logView" class="view active">
+        <div class="stack">
+          <input id="searchInput" type="search" autocomplete="off" placeholder="Card, set, number, id" />
+          <div id="selectedPanel" class="panel selected"></div>
+          <div id="searchResults" class="results"></div>
+        </div>
+      </section>
+
+      <section id="topView" class="view">
+        <div class="stack">
+          <div class="row">
+            <select id="topLimit">
+              <option value="100">Top 100</option>
+              <option value="300">Top 300</option>
+              <option value="600" selected>Top 600</option>
+              <option value="900">Top 900</option>
+              <option value="1200">Top 1200</option>
+              <option value="1500">Top 1500</option>
+            </select>
+            <button id="refreshTop">Rank</button>
+          </div>
+          <div id="topSummary" class="tiny"></div>
+          <div id="topList" class="top-list"></div>
+        </div>
+      </section>
+
+      <section id="moneyView" class="view">
+        <div class="stack">
+          <div class="row">
+            <select id="moneyScenario">
+              <option value="balanced">Balanced</option>
+              <option value="pessimistic">Pessimistic</option>
+              <option value="optimistic">Optimistic</option>
+            </select>
+            <button id="runModel">Run</button>
+          </div>
+          <div id="modelStatus" class="tiny">Run model after loading data.</div>
+          <div id="holdReveal" class="hold hidden-money">
+            <div>
+              <div class="hold-label">Hold to show</div>
+              <div class="money-grid" id="moneyGrid"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="setupView" class="view">
+        <div class="stack">
+          <div class="panel stack">
+            <input id="csvInput" type="file" accept=".csv,text/csv" />
+            <div class="quick">
+              <button id="exportJson">Export log</button>
+              <button id="exportCsv">Export CSV</button>
+            </div>
+            <input id="jsonInput" type="file" accept=".json,application/json" />
+          </div>
+
+          <div class="panel stack">
+            <div class="settings-grid">
+              <label><span>Cost</span><input id="acquisitionCost" inputmode="decimal" type="number" value="300000" /></label>
+              <label><span>Misc</span><input id="miscExpenses" inputmode="decimal" type="number" value="15000" /></label>
+              <label><span>Sell %</span><input id="sellingFeePct" inputmode="decimal" type="number" value="0" /></label>
+              <label><span>Vol %</span><input id="volatilityPct" inputmode="decimal" type="number" value="0" /></label>
+              <label><span>Sim</span><input id="simulations" inputmode="numeric" type="number" value="700" /></label>
+              <label><span>Step</span><input id="frontierStep" inputmode="numeric" type="number" value="50" /></label>
+            </div>
+            <div class="settings-grid">
+              <label><span>Fee 1500</span><input id="fee1500" inputmode="decimal" type="number" value="79.99" /></label>
+              <label><span>Fee 2500</span><input id="fee2500" inputmode="decimal" type="number" value="149" /></label>
+              <label><span>Fee 5000</span><input id="fee5000" inputmode="decimal" type="number" value="349" /></label>
+              <label><span>Fee 10000</span><input id="fee10000" inputmode="decimal" type="number" value="599" /></label>
+              <label><span>Premium</span><input id="premiumFee" inputmode="decimal" type="number" value="999" /></label>
+            </div>
+          </div>
+
+          <div class="panel stack">
+            <strong>Scenario</strong>
+            <div class="scenario-grid">
+              <label><span>Bal 7</span><input id="balanced_w7" inputmode="numeric" type="number" value="50" /></label>
+              <label><span>Bal 8</span><input id="balanced_w8" inputmode="numeric" type="number" value="30" /></label>
+              <label><span>Bal 9</span><input id="balanced_w9" inputmode="numeric" type="number" value="18" /></label>
+              <label><span>Bal 10</span><input id="balanced_w10" inputmode="numeric" type="number" value="2" /></label>
+              <label><span>Pess 7</span><input id="pessimistic_w7" inputmode="numeric" type="number" value="60" /></label>
+              <label><span>Pess 8</span><input id="pessimistic_w8" inputmode="numeric" type="number" value="30" /></label>
+              <label><span>Pess 9</span><input id="pessimistic_w9" inputmode="numeric" type="number" value="9" /></label>
+              <label><span>Pess 10</span><input id="pessimistic_w10" inputmode="numeric" type="number" value="1" /></label>
+              <label><span>Opt 7</span><input id="optimistic_w7" inputmode="numeric" type="number" value="25" /></label>
+              <label><span>Opt 8</span><input id="optimistic_w8" inputmode="numeric" type="number" value="45" /></label>
+              <label><span>Opt 9</span><input id="optimistic_w9" inputmode="numeric" type="number" value="27" /></label>
+              <label><span>Opt 10</span><input id="optimistic_w10" inputmode="numeric" type="number" value="3" /></label>
+            </div>
+            <button id="saveSettings">Save setup</button>
+          </div>
+
+          <button id="resetEstimates" class="danger">Clear estimates</button>
+        </div>
+      </section>
+    </main>
+
+    <nav>
+      <button class="active" data-view="logView">Log</button>
+      <button data-view="topView">Top</button>
+      <button data-view="moneyView">Money</button>
+      <button data-view="setupView">Setup</button>
+    </nav>
+  </div>
+
+  <script>
+    const DB_NAME = "pokemon-field-evaluator-poc";
+    const DB_VERSION = 1;
+    const STORE = "state";
+    const GRADES = [7, 8, 9, 10];
+    const SCENARIOS = {
+      balanced: () => weightsForScenario("balanced"),
+      pessimistic: () => weightsForScenario("pessimistic"),
+      optimistic: () => weightsForScenario("optimistic")
+    };
+
+    const state = {
+      cards: [],
+      estimates: {},
+      settings: {},
+      selectedId: "",
+      topRanking: [],
+      model: null,
+      dirty: false
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const money = (value) => new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0
+    }).format(Number.isFinite(value) ? value : 0);
+    const compactMoney = (value) => new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      notation: "compact",
+      maximumFractionDigits: 1
+    }).format(Number.isFinite(value) ? value : 0);
+
+    function openDb() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function dbGet(key) {
+      const db = await openDb();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readonly");
+        const request = tx.objectStore(STORE).get(key);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+        tx.oncomplete = () => db.close();
+      });
+    }
+
+    async function dbSet(key, value) {
+      const db = await openDb();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        const request = tx.objectStore(STORE).put(value, key);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+        tx.oncomplete = () => db.close();
+      });
+    }
+
+    let saveTimer = 0;
+    function scheduleSave() {
+      clearTimeout(saveTimer);
+      $("statusLine").textContent = "Saving...";
+      saveTimer = setTimeout(async () => {
+        const snapshot = {
+          cards: state.cards,
+          estimates: state.estimates,
+          settings: readSettings(),
+          savedAt: new Date().toISOString()
+        };
+        try {
+          await dbSet("snapshot", snapshot);
+        } catch {
+          localStorage.setItem("pokemon-field-evaluator-poc", JSON.stringify(snapshot));
+        }
+        updateStatus();
+      }, 120);
+    }
+
+    function parseMoney(value) {
+      const parsed = Number.parseFloat(String(value ?? "").replace(/[$,]/g, ""));
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function parseCsv(text) {
+      const rows = [];
+      let row = [];
+      let field = "";
+      let quoted = false;
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        const next = text[i + 1];
+        if (ch === "\"" && quoted && next === "\"") {
+          field += "\"";
+          i++;
+        } else if (ch === "\"") {
+          quoted = !quoted;
+        } else if (ch === "," && !quoted) {
+          row.push(field);
+          field = "";
+        } else if ((ch === "\n" || ch === "\r") && !quoted) {
+          if (ch === "\r" && next === "\n") i++;
+          row.push(field);
+          if (row.some((v) => v.trim())) rows.push(row);
+          row = [];
+          field = "";
+        } else {
+          field += ch;
+        }
+      }
+      row.push(field);
+      if (row.some((v) => v.trim())) rows.push(row);
+      const headers = rows.shift()?.map((h) => h.trim()) || [];
+      return rows.map((values) => Object.fromEntries(headers.map((h, i) => [h, values[i] ?? ""])));
+    }
+
+    function normalizeRows(rows) {
+      const cards = rows.map((row, index) => ({
+        id: String(Number.parseInt(row.id, 10) || row.id || index + 1),
+        set: row.set_name || row.Set || "",
+        card: row.card_name || row.Card || "",
+        raw: parseMoney(row.ungraded),
+        p7: parseMoney(row.psa_7),
+        p8: parseMoney(row.psa_8),
+        p9: parseMoney(row.psa_9),
+        p10: parseMoney(row.psa_10),
+        setZScore: Number.parseFloat(row.set_z_score)
+      }));
+      applySetZScores(cards);
+      return cards;
+    }
+
+    function applySetZScores(cards) {
+      const groups = new Map();
+      cards.forEach((card) => {
+        if (Number.isFinite(card.setZScore)) return;
+        if (!groups.has(card.set)) groups.set(card.set, []);
+        groups.get(card.set).push(card);
+      });
+      groups.forEach((items) => {
+        const mean = items.reduce((sum, card) => sum + card.p10, 0) / items.length;
+        const variance = items.length > 1
+          ? items.reduce((sum, card) => sum + (card.p10 - mean) ** 2, 0) / (items.length - 1)
+          : 0;
+        const dev = Math.sqrt(variance) || 1;
+        items.forEach((card) => card.setZScore = (card.p10 - mean) / dev);
+      });
+    }
+
+    function readSettings() {
+      const num = (id) => Number.parseFloat($(id).value) || 0;
+      return {
+        acquisitionCost: num("acquisitionCost"),
+        miscExpenses: num("miscExpenses"),
+        sellingFeePct: num("sellingFeePct") / 100,
+        volatilityPct: num("volatilityPct"),
+        simulations: Math.max(100, Math.min(5000, Math.floor(num("simulations") || 700))),
+        frontierStep: Math.max(10, Math.min(250, Math.floor(num("frontierStep") || 50))),
+        fees: {
+          fee1500: num("fee1500"),
+          fee2500: num("fee2500"),
+          fee5000: num("fee5000"),
+          fee10000: num("fee10000"),
+          premiumFee: num("premiumFee")
+        },
+        weights: {
+          balanced: weightsForScenario("balanced"),
+          pessimistic: weightsForScenario("pessimistic"),
+          optimistic: weightsForScenario("optimistic")
+        }
+      };
+    }
+
+    function applySettings(settings = {}) {
+      for (const [key, value] of Object.entries(settings)) {
+        if ($(key) && typeof value !== "object") $(key).value = value;
+      }
+      if (settings.sellingFeePct !== undefined) $("sellingFeePct").value = settings.sellingFeePct * 100;
+      if (settings.fees) {
+        for (const [key, value] of Object.entries(settings.fees)) if ($(key)) $(key).value = value;
+      }
+      if (settings.weights) {
+        if (Number.isFinite(Number(settings.weights.p7))) {
+          settings.weights = { balanced: settings.weights };
+        }
+        for (const scenarioId of ["balanced", "pessimistic", "optimistic"]) {
+          const weights = settings.weights[scenarioId] || (scenarioId === "balanced" ? settings.weights.field : null);
+          if (!weights) continue;
+          $(`${scenarioId}_w7`).value = weights.p7 ?? $(`${scenarioId}_w7`).value;
+          $(`${scenarioId}_w8`).value = weights.p8 ?? $(`${scenarioId}_w8`).value;
+          $(`${scenarioId}_w9`).value = weights.p9 ?? $(`${scenarioId}_w9`).value;
+          $(`${scenarioId}_w10`).value = weights.p10 ?? $(`${scenarioId}_w10`).value;
+        }
+      }
+    }
+
+    function weightsForScenario(scenarioId) {
+      return {
+        p7: Number.parseFloat($(`${scenarioId}_w7`).value) || 0,
+        p8: Number.parseFloat($(`${scenarioId}_w8`).value) || 0,
+        p9: Number.parseFloat($(`${scenarioId}_w9`).value) || 0,
+        p10: Number.parseFloat($(`${scenarioId}_w10`).value) || 0
+      };
+    }
+
+    function normalizeWeights(weights) {
+      const values = [weights.p7, weights.p8, weights.p9, weights.p10].map((v) => Math.max(0, Number(v) || 0));
+      const total = values.reduce((sum, value) => sum + value, 0) || 1;
+      return { p7: values[0] / total, p8: values[1] / total, p9: values[2] / total, p10: values[3] / total };
+    }
+
+    function gradeFee(value, fees) {
+      if (value <= 1500) return fees.fee1500;
+      if (value <= 2500) return fees.fee2500;
+      if (value <= 5000) return fees.fee5000;
+      if (value <= 10000) return fees.fee10000;
+      return fees.premiumFee;
+    }
+
+    function valueForGrade(card, grade) {
+      const values = { 7: card.p7, 8: card.p8, 9: card.p9, 10: card.p10 };
+      if (values[grade] > 0) return values[grade];
+      const order = [grade - 1, grade + 1, grade - 2, grade + 2, grade - 3, grade + 3];
+      for (const candidate of order) if (values[candidate] > 0) return values[candidate];
+      return card.raw;
+    }
+
+    function createRng(seed = 1) {
+      let stateValue = seed >>> 0;
+      return function random() {
+        stateValue = (stateValue + 0x6d2b79f5) | 0;
+        let value = Math.imul(stateValue ^ (stateValue >>> 15), 1 | stateValue);
+        value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    function createNormalSampler(random) {
+      let spare = null;
+      return function normal() {
+        if (spare !== null) {
+          const value = spare;
+          spare = null;
+          return value;
+        }
+        let u = 0;
+        let v = 0;
+        while (u === 0) u = random();
+        while (v === 0) v = random();
+        const mag = Math.sqrt(-2 * Math.log(u));
+        spare = mag * Math.sin(2 * Math.PI * v);
+        return mag * Math.cos(2 * Math.PI * v);
+      };
+    }
+
+    function lognormalFromNormal(mean, volatilityPct, normalValue) {
+      const volatility = Math.max(0, Number(volatilityPct) || 0) / 100;
+      if (!volatility || mean <= 0) return mean;
+      const sigma = Math.sqrt(Math.log(1 + volatility * volatility));
+      const mu = Math.log(mean) - 0.5 * sigma * sigma;
+      return Math.exp(mu + sigma * normalValue);
+    }
+
+    function chooseGrade(randomValue, weights) {
+      if (randomValue < weights.p7) return 7;
+      if (randomValue < weights.p7 + weights.p8) return 8;
+      if (randomValue < weights.p7 + weights.p8 + weights.p9) return 9;
+      return 10;
+    }
+
+    function expectedAddedValue(card, config, weights) {
+      const normalized = normalizeWeights(weights);
+      const probabilities = { 7: normalized.p7, 8: normalized.p8, 9: normalized.p9, 10: normalized.p10 };
+      return GRADES.reduce((sum, grade) => {
+        const value = valueForGrade(card, grade);
+        return sum + probabilities[grade] * ((value - card.raw) * (1 - config.sellingFeePct) - gradeFee(value, config.fees));
+      }, 0);
+    }
+
+    function estimateIncrement(card, grade, config) {
+      const value = valueForGrade(card, grade);
+      return (value - card.raw) * (1 - config.sellingFeePct) - gradeFee(value, config.fees);
+    }
+
+    function rankRemaining(weights, limit = Infinity) {
+      const config = readSettings();
+      return state.cards
+        .filter((card) => !state.estimates[card.id])
+        .map((card, index) => ({
+          card,
+          ev: expectedAddedValue(card, config, weights),
+          index
+        }))
+        .sort((a, b) => b.ev - a.ev || b.card.p10 - a.card.p10 || a.index - b.index)
+        .slice(0, limit)
+        .map((record, index) => ({ ...record, rank: index + 1 }));
+    }
+
+    function percentile(sorted, p) {
+      if (!sorted.length) return 0;
+      const position = (sorted.length - 1) * p;
+      const lower = Math.floor(position);
+      const upper = Math.ceil(position);
+      if (lower === upper) return sorted[lower];
+      return sorted[lower] * (upper - position) + sorted[upper] * (position - lower);
+    }
+
+    async function runModel() {
+      if (!state.cards.length) return;
+      const config = readSettings();
+      const weights = SCENARIOS[$("moneyScenario").value]();
+      const normalized = normalizeWeights(weights);
+      const ranking = rankRemaining(weights);
+      const baseRawProfit = state.cards.reduce((sum, card) => sum + card.raw, 0) * (1 - config.sellingFeePct)
+        - config.acquisitionCost - config.miscExpenses;
+      const estimatedCards = state.cards.filter((card) => state.estimates[card.id]);
+      const deterministicIncrement = estimatedCards.reduce((sum, card) =>
+        sum + estimateIncrement(card, state.estimates[card.id].grade, config), 0);
+      const fixedProfit = baseRawProfit + deterministicIncrement;
+      const step = config.frontierStep;
+      const counts = [0];
+      for (let count = step; count < ranking.length; count += step) counts.push(count);
+      if (counts.at(-1) !== ranking.length) counts.push(ranking.length);
+      const outputs = counts.map((count) => ({ count, profits: [] }));
+      const random = createRng(20260629);
+      const normal = createNormalSampler(random);
+      const volatility = Number(config.volatilityPct) > 0;
+
+      $("modelStatus").textContent = "Running...";
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      for (let run = 0; run < config.simulations; run++) {
+        let running = 0;
+        let checkpointIndex = 0;
+        outputs[checkpointIndex].profits.push(fixedProfit);
+        for (let i = 0; i < ranking.length; i++) {
+          const card = ranking[i].card;
+          const grade = chooseGrade(random(), normalized);
+          const listed = valueForGrade(card, grade);
+          const realized = lognormalFromNormal(listed, config.volatilityPct, volatility ? normal() : 0);
+          running += (realized - card.raw) * (1 - config.sellingFeePct) - gradeFee(realized, config.fees);
+          while (outputs[checkpointIndex + 1]?.count === i + 1) {
+            checkpointIndex++;
+            outputs[checkpointIndex].profits.push(fixedProfit + running);
+          }
+        }
+        if (run % 100 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+
+      const frontier = outputs.map((point) => {
+        point.profits.sort((a, b) => a - b);
+        return {
+          count: point.count,
+          p5: percentile(point.profits, 0.05),
+          median: percentile(point.profits, 0.5),
+          p95: percentile(point.profits, 0.95)
+        };
+      });
+      const best = frontier.reduce((winner, point) => point.median > winner.median ? point : winner, frontier[0]);
+      const improvement = best.median - frontier[0].median;
+      const target = frontier[0].median + Math.max(0, improvement) * 0.95;
+      const sweet = improvement <= 0 ? frontier[0] : frontier.find((point) => point.count <= best.count && point.median >= target) || best;
+
+      state.model = {
+        estimatedCount: estimatedCards.length,
+        fixedProfit,
+        deterministicIncrement,
+        best,
+        sweet,
+        totalGradedCount: estimatedCards.length + sweet.count,
+        rawSaleCount: state.cards.length - estimatedCards.length - sweet.count,
+        remaining: ranking.length
+      };
+      renderMoney();
+      $("modelStatus").textContent = `${config.simulations.toLocaleString()} sims · ${ranking.length.toLocaleString()} unrated`;
+    }
+
+    function updateStatus() {
+      const count = Object.keys(state.estimates).length;
+      $("statusLine").textContent = `${state.cards.length.toLocaleString()} cards · ${count.toLocaleString()} logged`;
+    }
+
+    function renderSelected() {
+      const panel = $("selectedPanel");
+      const card = state.cards.find((item) => item.id === state.selectedId);
+      if (!card) {
+        panel.innerHTML = "<div class=\"empty\">Select a card</div>";
+        return;
+      }
+      const estimate = state.estimates[card.id];
+      panel.innerHTML = `
+        <h1>${escapeHtml(card.card)}</h1>
+        <p>${escapeHtml(card.set)} · #${escapeHtml(card.id)}</p>
+        <div class="grades">
+          ${GRADES.map((grade) => `<button data-grade="${grade}" class="${estimate?.grade === grade ? "active" : ""}">${grade}</button>`).join("")}
+          <button class="clear" data-grade="clear">Clear</button>
+        </div>
+      `;
+      panel.querySelectorAll("[data-grade]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const grade = button.dataset.grade;
+          if (grade === "clear") {
+            delete state.estimates[card.id];
+          } else {
+            state.estimates[card.id] = { grade: Number(grade), at: new Date().toISOString() };
+          }
+          state.model = null;
+          scheduleSave();
+          renderSelected();
+          renderSearch();
+          updateStatus();
+        });
+      });
+    }
+
+    function searchScore(card, tokens) {
+      const haystack = `${card.card} ${card.set} ${card.id}`.toLowerCase();
+      let score = 0;
+      for (const token of tokens) {
+        const index = haystack.indexOf(token);
+        if (index < 0) return -1;
+        score += index === 0 ? 30 : Math.max(1, 20 - index / 4);
+      }
+      if (state.estimates[card.id]) score -= 3;
+      return score;
+    }
+
+    function renderSearch() {
+      const query = $("searchInput").value.trim().toLowerCase();
+      const results = $("searchResults");
+      if (!state.cards.length) {
+        results.innerHTML = "<div class=\"empty\">Setup · import CSV</div>";
+        return;
+      }
+      if (!query) {
+        const recent = Object.entries(state.estimates)
+          .sort((a, b) => (b[1].at || "").localeCompare(a[1].at || ""))
+          .slice(0, 8)
+          .map(([id]) => state.cards.find((card) => card.id === id))
+          .filter(Boolean);
+        results.innerHTML = recent.length
+          ? recent.map(cardButton).join("")
+          : "<div class=\"empty\">Search to log</div>";
+      } else {
+        const tokens = query.split(/\s+/).filter(Boolean);
+        const matches = state.cards
+          .map((card) => ({ card, score: searchScore(card, tokens) }))
+          .filter((record) => record.score >= 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 12)
+          .map((record) => record.card);
+        results.innerHTML = matches.length ? matches.map(cardButton).join("") : "<div class=\"empty\">No match</div>";
+      }
+      bindCardButtons(results);
+    }
+
+    function cardButton(card, rank = "") {
+      const estimate = state.estimates[card.id];
+      return `
+        <button class="card-button" data-card-id="${escapeHtml(card.id)}">
+          <span><b>${escapeHtml(card.card)}</b><small>${escapeHtml(card.set)}</small></span>
+          <span class="badge">${estimate ? `PSA ${estimate.grade}` : rank}</span>
+        </button>
+      `;
+    }
+
+    function bindCardButtons(root) {
+      root.querySelectorAll("[data-card-id]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.selectedId = button.dataset.cardId;
+          showView("logView");
+          $("searchInput").value = "";
+          renderSelected();
+          renderSearch();
+        });
+      });
+    }
+
+    function renderTop() {
+      if (!state.cards.length) {
+        $("topList").innerHTML = "<div class=\"empty\">Import CSV first</div>";
+        return;
+      }
+      const limit = Number($("topLimit").value) || 600;
+      state.topRanking = rankRemaining({ p7: 1, p8: 1, p9: 1, p10: 1 }, limit);
+      const unseenInLimit = state.topRanking.filter((record) => !state.estimates[record.card.id]).length;
+      $("topSummary").textContent = `${unseenInLimit.toLocaleString()} unrated in top ${limit} · mixed EV`;
+      $("topList").innerHTML = state.topRanking
+        .slice(0, 80)
+        .map((record) => cardButton(record.card, `#${record.rank}`))
+        .join("") || "<div class=\"empty\">Nothing left</div>";
+      bindCardButtons($("topList"));
+    }
+
+    function renderMoney() {
+      const grid = $("moneyGrid");
+      if (!state.model) {
+        grid.innerHTML = "";
+        return;
+      }
+      grid.innerHTML = `
+        <div class="metric"><small>Median</small><b>${compactMoney(state.model.sweet.median)}</b></div>
+        <div class="metric"><small>Grade</small><b>${state.model.totalGradedCount}</b></div>
+        <div class="metric"><small>Raw</small><b>${state.model.rawSaleCount}</b></div>
+        <div class="metric"><small>P5</small><b>${compactMoney(state.model.sweet.p5)}</b></div>
+        <div class="metric"><small>P95</small><b>${compactMoney(state.model.sweet.p95)}</b></div>
+        <div class="metric"><small>Logged</small><b>${state.model.estimatedCount}</b></div>
+      `;
+    }
+
+    function showView(id) {
+      document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === id));
+      document.querySelectorAll("nav button").forEach((button) => button.classList.toggle("active", button.dataset.view === id));
+      if (id === "topView") renderTop();
+      if (id === "moneyView") renderMoney();
+    }
+
+    function exportDownload(name, blob) {
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = name;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 500);
+    }
+
+    function csvCell(value) {
+      const text = String(value ?? "");
+      return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;"
+      }[char]));
+    }
+
+    async function boot() {
+      try {
+        const snapshot = await dbGet("snapshot");
+        if (snapshot) {
+          state.cards = snapshot.cards || [];
+          state.estimates = snapshot.estimates || {};
+          applySettings(snapshot.settings || {});
+        }
+      } catch {
+        try {
+          const raw = localStorage.getItem("pokemon-field-evaluator-poc");
+          if (raw) {
+            const snapshot = JSON.parse(raw);
+            state.cards = snapshot.cards || [];
+            state.estimates = snapshot.estimates || {};
+            applySettings(snapshot.settings || {});
+          }
+        } catch {}
+      }
+      updateStatus();
+      renderSelected();
+      renderSearch();
+    }
+
+    document.querySelectorAll("nav button").forEach((button) =>
+      button.addEventListener("click", () => showView(button.dataset.view))
+    );
+    $("searchInput").addEventListener("input", renderSearch);
+    $("csvInput").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      state.cards = normalizeRows(parseCsv(await file.text()));
+      state.estimates = {};
+      state.selectedId = "";
+      state.model = null;
+      scheduleSave();
+      updateStatus();
+      renderSelected();
+      renderSearch();
+      showView("logView");
+    });
+    $("jsonInput").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const imported = JSON.parse(await file.text());
+      if (imported.estimates) state.estimates = imported.estimates;
+      if (imported.settings) applySettings(imported.settings);
+      scheduleSave();
+      updateStatus();
+      renderSelected();
+      renderSearch();
+    });
+    $("exportJson").addEventListener("click", () => {
+      exportDownload("field-estimates.json", new Blob([JSON.stringify({
+        exportedAt: new Date().toISOString(),
+        estimates: state.estimates,
+        settings: readSettings()
+      }, null, 2)], { type: "application/json" }));
+    });
+    $("exportCsv").addEventListener("click", () => {
+      const rows = [["id", "set_name", "card_name", "estimated_grade", "logged_at"]];
+      Object.entries(state.estimates).forEach(([id, estimate]) => {
+        const card = state.cards.find((item) => item.id === id);
+        rows.push([id, card?.set || "", card?.card || "", estimate.grade, estimate.at || ""]);
+      });
+      exportDownload("field-estimates.csv", new Blob([rows.map((row) => row.map(csvCell).join(",")).join("\n")], { type: "text/csv" }));
+    });
+    $("saveSettings").addEventListener("click", scheduleSave);
+    $("resetEstimates").addEventListener("click", () => {
+      if (!confirm("Clear all logged estimates on this phone?")) return;
+      state.estimates = {};
+      state.model = null;
+      scheduleSave();
+      updateStatus();
+      renderSelected();
+      renderSearch();
+    });
+    $("refreshTop").addEventListener("click", renderTop);
+    $("runModel").addEventListener("click", runModel);
+    const hold = $("holdReveal");
+    const reveal = () => hold.classList.remove("hidden-money");
+    const hide = () => hold.classList.add("hidden-money");
+    hold.addEventListener("pointerdown", reveal);
+    hold.addEventListener("pointerup", hide);
+    hold.addEventListener("pointercancel", hide);
+    hold.addEventListener("pointerleave", hide);
+
+    boot();
+  </script>
+</body>
+</html>

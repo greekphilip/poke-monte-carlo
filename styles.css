@@ -225,7 +225,7 @@ tbody tr.clickable:hover td { background: rgba(119, 232, 181, .055); }
 .optimizer-chart svg {
   display: block;
   width: 100%;
-  min-width: 820px;
+  min-width: 680px;
   height: auto;
 }
 .optimizer-axis { stroke: rgba(207,236,225,.3); }
@@ -963,7 +963,6 @@ tbody tr.clickable:hover td { background: rgba(119, 232, 181, .055); }
   background: rgba(56,214,208,.09);
 }
 .reality-checkpoint-line { stroke: var(--gold); stroke-width: 2; stroke-dasharray: 7 5; }
-.reality-checkpoint-label { fill: var(--gold); font-size: 12px; font-weight: 900; letter-spacing: .08em; }
 .reality-current-dot { stroke: #fff7d6; stroke-width: 3; }
 .reality-total-card { border-color: rgba(246,200,95,.45); }
 .reality-total-card strong { color: var(--gold); font-size: 1.15rem; }

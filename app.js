@@ -263,6 +263,10 @@ function enrichSuiteZScores(suite) {
 }
 
 function normalizeSuiteSelection(suite) {
+  suite.config = {
+    ...(suite.config || {}),
+    analysisMode: "live"
+  };
   suite.scenarios = (suite.scenarios || []).map((scenario) => ({
     id: scenario.id,
     name: scenario.name,
@@ -271,6 +275,7 @@ function normalizeSuiteSelection(suite) {
     allowChasePsa10: scenario.allowChasePsa10 !== false
   }));
   (suite.results || []).forEach((result) => {
+    result.analysisMode = "live";
     if (!result.selectionDetails && result.cards) {
       result.selectionDetails = result.cards.map((card, index) => ({
         rank: index + 1,
@@ -1160,16 +1165,16 @@ function includeFirstEditions() {
 }
 
 function liveModeEnabled() {
-  return el("analysisMode")?.value === "live";
+  return true;
 }
 
 function modeledCards() {
   const cards = applyPortfolioToCards(
     state.cards,
     state.portfolio,
-    liveModeEnabled()
+    true
   );
-  if (!liveModeEnabled() || !state.gradeExperiment.count) return cards;
+  if (!state.gradeExperiment.count) return cards;
   return applyGradeExperiment(
     cards,
     activeGradeExperiment(cards),
@@ -1179,16 +1184,6 @@ function modeledCards() {
 
 function poolsForScenario(scenario, cardCount) {
   const cards = modeledCards();
-  if (!liveModeEnabled()) {
-    return selectTopCardsByExpectedAddedValue(cards, {
-      includeFirstEditions: includeFirstEditions(),
-      cardCount,
-      config: currentConfig(),
-      weights: scenario.weights,
-      allowChasePsa10: scenario.allowChasePsa10 !== false,
-      laborCost: 0
-    });
-  }
   const eligible = cards.filter(
     (card) => includeFirstEditions() || !isFirstEdition(card)
   );
@@ -1249,7 +1244,7 @@ function currentConfig() {
     volatilityPct: numberValue("volatilityPct"),
     profitTarget: numberValue("profitTarget"),
     includeFirstEditions: includeFirstEditions(),
-    analysisMode: el("analysisMode")?.value || "acquisition",
+    analysisMode: "live",
     fees: {
       fee1500: numberValue("fee1500"),
       fee2500: numberValue("fee2500"),
@@ -1268,9 +1263,6 @@ function applyConfig(config) {
   el("profitTarget").value = config.profitTarget;
   el("detailProfitTarget").value = config.profitTarget;
   el("firstEditionMode").value = config.includeFirstEditions ? "include" : "exclude";
-  if (el("analysisMode")) {
-    el("analysisMode").value = config.analysisMode === "live" ? "live" : "acquisition";
-  }
   Object.entries(config.fees).forEach(([key, value]) => {
     if (el(key)) el(key).value = value;
   });
@@ -1852,10 +1844,7 @@ function activeGradeExperiment(
 }
 
 function restoreModeAfterExperiment() {
-  if (state.gradeExperiment.previousAnalysisMode) {
-    el("analysisMode").value = state.gradeExperiment.previousAnalysisMode;
-    state.gradeExperiment.previousAnalysisMode = null;
-  }
+  state.gradeExperiment.previousAnalysisMode = null;
 }
 
 function setExperimentCount(value, render = true) {
@@ -1867,10 +1856,7 @@ function setExperimentCount(value, render = true) {
   );
   const wasActive = state.gradeExperiment.count > 0;
   state.gradeExperiment.count = count;
-  if (count > 0 && !wasActive) {
-    state.gradeExperiment.previousAnalysisMode = el("analysisMode").value;
-    el("analysisMode").value = "live";
-  } else if (!count && wasActive) {
+  if (!count && wasActive) {
     restoreModeAfterExperiment();
   }
   invalidateResultsAfterDatasetEdit();
@@ -2078,10 +2064,11 @@ function optimizerSeriesChart(containerId, series, globalRange = null, condition
         const endX = x(globalRange.positiveCeiling);
         const bandWidth = Math.max(2, endX - startX);
         return `
-          <rect class="global-sweet-band" x="${startX}" y="${margin.top}" width="${bandWidth}" height="${plotHeight}" />
+          <rect class="global-sweet-band" x="${startX}" y="${margin.top}" width="${bandWidth}" height="${plotHeight}">
+            <title>Global sweet range · ${globalRange.efficientStart.toLocaleString()}–${globalRange.positiveCeiling.toLocaleString()} cards</title>
+          </rect>
           <line class="global-sweet-boundary" x1="${startX}" x2="${startX}" y1="${margin.top}" y2="${height - margin.bottom}" />
-          <line class="global-sweet-boundary" x1="${endX}" x2="${endX}" y1="${margin.top}" y2="${height - margin.bottom}" />
-          <text class="global-sweet-label" x="${startX + bandWidth / 2}" y="${margin.top + 16}" text-anchor="middle">GLOBAL SWEET RANGE · ${globalRange.efficientStart.toLocaleString()}–${globalRange.positiveCeiling.toLocaleString()}</text>`;
+          <line class="global-sweet-boundary" x1="${endX}" x2="${endX}" y1="${margin.top}" y2="${height - margin.bottom}" />`;
       })()
     : "";
 
@@ -2090,12 +2077,12 @@ function optimizerSeriesChart(containerId, series, globalRange = null, condition
         const condX = x(conditioningCount);
         const dotMarkup = deterministicProfit !== null
           ? `<circle class="reality-current-dot" cx="${condX}" cy="${y(deterministicProfit)}" r="10" fill="#f4f8f5" />
-             <circle cx="${condX}" cy="${y(deterministicProfit)}" r="5" fill="var(--gold)" />
-             <text class="reality-checkpoint-label" x="${condX}" y="${y(deterministicProfit) - 16}" text-anchor="middle">${money(deterministicProfit)}</text>`
+             <circle cx="${condX}" cy="${y(deterministicProfit)}" r="5" fill="var(--gold)">
+               <title>Today · ${conditioningCount.toLocaleString()} committed · ${money(deterministicProfit)}</title>
+             </circle>`
           : "";
         return `
           <line class="reality-checkpoint-line" x1="${condX}" x2="${condX}" y1="${margin.top}" y2="${height - margin.bottom}" />
-          <text class="reality-checkpoint-label" x="${condX}" y="${margin.top + 32}" text-anchor="middle">TODAY · ${conditioningCount.toLocaleString()} COMMITTED</text>
           ${dotMarkup}`;
       })()
     : "";
@@ -3643,7 +3630,7 @@ async function rerunSelectedScenario() {
     replacement.rawValue = pool.rawValue;
     replacement.committedCardCount = pool.committedCount || 0;
     replacement.futureCardCount = pool.futureCount ?? pool.grading.length;
-    replacement.analysisMode = state.activeSuite.config.analysisMode;
+    replacement.analysisMode = "live";
     replacement.selectionOptimization = {
       frontierStep: 50,
       sweetSpot: optimization.sweetSpot,
@@ -3915,7 +3902,6 @@ function bindEvents() {
     "miscExpenses",
     "volatilityPct",
     "firstEditionMode",
-    "analysisMode",
     "fee1500",
     "fee2500",
     "fee5000",
@@ -3925,17 +3911,6 @@ function bindEvents() {
   ].forEach((id) =>
     el(id).addEventListener("input", updateCollectionSummary)
   );
-  el("analysisMode").addEventListener("change", () => {
-    if (state.gradeExperiment.count) {
-      state.gradeExperiment.count = 0;
-      state.gradeExperiment.previousAnalysisMode = null;
-      state.gradeExperiment.cacheKey = "";
-    }
-    invalidateResultsAfterDatasetEdit();
-    updateCollectionSummary();
-    renderPortfolio();
-    renderGradeExperiment();
-  });
   el("portfolioScenario").addEventListener("change", (event) => {
     state.portfolioScenarioId = event.target.value;
     state.portfolioPage = 1;
