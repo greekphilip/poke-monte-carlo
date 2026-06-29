@@ -331,7 +331,16 @@ export async function simulateScenario(options, onProgress = () => {}, isCancell
         p10: 0
       };
   const baselineGradeProbabilities = new Float64Array(cardCount * 4);
+  const actualGradeCounts = new Uint32Array(4);
+  const experimentalGradeCounts = new Uint32Array(4);
   cards.forEach((card, cardIndex) => {
+    const actualGrade = Number(card.actualGrade);
+    if ([7, 8, 9, 10].includes(actualGrade)) {
+      actualGradeCounts[actualGrade - 7]++;
+      if (card.experimentalGrade) {
+        experimentalGradeCounts[actualGrade - 7]++;
+      }
+    }
     const cardWeights = weightsForCard(card, weights, allowChasePsa10);
     [cardWeights.p7, cardWeights.p8, cardWeights.p9, cardWeights.p10]
       .forEach((probability, gradeIndex) => {
@@ -432,6 +441,8 @@ export async function simulateScenario(options, onProgress = () => {}, isCancell
         Boolean(card.personalGradeWeights)
     ).length,
     baselineGradeProbabilities,
+    actualGradeCounts,
+    experimentalGradeCounts,
     bucketCount,
     bucketMin: bounds.minimum,
     bucketWidth: bounds.width,

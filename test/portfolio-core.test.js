@@ -6,6 +6,7 @@ import {
   isCommittedGradingCard,
   isFutureGradingCandidate,
   normalizePortfolio,
+  portfolioGradeProfile,
   portfolioSummary
 } from "../portfolio-core.js";
 
@@ -62,4 +63,30 @@ test("portfolio summary counts stages and realized gross sales", () => {
   assert.equal(summary.counts.submitted, 1);
   assert.equal(summary.counts.sold, 1);
   assert.equal(summary.realizedGross, 250);
+});
+
+test("portfolio grade profile separates actual results from estimate-weighted projection", () => {
+  const cards = [{ id: 1 }, { id: 2 }, { id: 3 }];
+  const portfolio = {
+    records: {
+      1: { actualGrade: 10 },
+      2: { estimatedGrade: 9, estimateConfidence: 70 },
+      3: { actualGrade: 8, estimatedGrade: 10, estimateConfidence: 90 }
+    }
+  };
+  const actual = portfolioGradeProfile(cards, portfolio, false);
+  const projected = portfolioGradeProfile(cards, portfolio, true);
+
+  assert.deepEqual(actual.actualCounts, [0, 1, 0, 1]);
+  assert.deepEqual(actual.counts, [0, 1, 0, 1]);
+  assert.equal(actual.actualCardCount, 2);
+  assert.equal(actual.estimatedCardCount, 0);
+  assert.deepEqual(actual.mix, [0, 0.5, 0, 0.5]);
+
+  assert.equal(projected.actualCardCount, 2);
+  assert.equal(projected.estimatedCardCount, 1);
+  assert.ok(Math.abs(projected.counts.reduce((sum, value) => sum + value, 0) - 3) < 1e-12);
+  assert.equal(projected.counts[1], 1.12);
+  assert.equal(projected.counts[2], 0.7);
+  assert.ok(projected.counts[3] > projected.counts[0]);
 });

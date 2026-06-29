@@ -50,6 +50,7 @@ const PUBLIC_FILES = new Set([
   "sim-worker.js",
   "optimizer-core.js",
   "optimizer-worker.js",
+  "experiment-core.js",
   "portfolio-core.js",
   "price-audit-core.js",
   "sale-planner-core.js",

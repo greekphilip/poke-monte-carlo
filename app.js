@@ -2,11 +2,13 @@ import {
   RESULT_SCHEMA_VERSION,
   applySetZScores,
   expectedAddedValue,
+  gradeFee,
   isFirstEdition,
   normalizeWeights,
   rankCardsByExpectedAddedValue,
   selectTopCardsByExpectedAddedValue,
-  selectedBucketStats
+  selectedBucketStats,
+  valueForGrade
 } from "./sim-core.js";
 import { buildPsa7Audit } from "./price-audit-core.js";
 import {
@@ -32,6 +34,7 @@ import {
   isRawSoldCard,
   normalizeCardRecord,
   normalizePortfolio,
+  portfolioGradeProfile,
   portfolioSummary
 } from "./portfolio-core.js";
 import {
@@ -39,6 +42,11 @@ import {
   buildSalePlan
 } from "./sale-planner-core.js";
 import { findGlobalSweetRange } from "./optimizer-core.js";
+import {
+  applyGradeExperiment,
+  buildGradeExperiment,
+  experimentProgress
+} from "./experiment-core.js";
 
 document.documentElement.dataset.appStarted = "true";
 
@@ -81,6 +89,16 @@ const state = {
   portfolioPage: 1,
   portfolioPageSize: 100,
   portfolioScenarioId: "",
+  gradeExperiment: {
+    count: 0,
+    seed: Math.floor(Math.random() * 0xffffffff) >>> 0,
+    rankingScenarioId: "",
+    drawScenarioId: "",
+    respectPersonalEstimates: true,
+    previousAnalysisMode: null,
+    cacheKey: "",
+    definition: null
+  },
   scenarios: PRESETS.map(([name, p7, p8, p9, p10], index) => ({
     id: `preset-${index + 1}`,
     name,
@@ -313,6 +331,7 @@ async function acceptCsv(text, name) {
   updateCollectionSummary();
   renderDatasetEditor();
   renderPortfolio();
+  renderGradeExperiment();
 }
 
 async function loadDefaultCsv() {
@@ -1145,10 +1164,16 @@ function liveModeEnabled() {
 }
 
 function modeledCards() {
-  return applyPortfolioToCards(
+  const cards = applyPortfolioToCards(
     state.cards,
     state.portfolio,
-    true
+    liveModeEnabled()
+  );
+  if (!liveModeEnabled() || !state.gradeExperiment.count) return cards;
+  return applyGradeExperiment(
+    cards,
+    activeGradeExperiment(cards),
+    state.gradeExperiment.count
   );
 }
 
@@ -1258,8 +1283,11 @@ function updateCollectionSummary() {
   const modeCopy = liveModeEnabled()
     ? `live from today · ${summary.counts.submitted + summary.counts.graded} at PSA/graded · ${summary.counts.sold} sold`
     : "pre-purchase assumptions";
+  const experimentCopy = state.gradeExperiment.count
+    ? ` · ${state.gradeExperiment.count.toLocaleString()} synthetic grades active`
+    : "";
   el("collectionSummary").textContent =
-    `${eligible.length.toLocaleString()} eligible cards · ${modeCopy} · automatic sweet-spot batches of 50 · ` +
+    `${eligible.length.toLocaleString()} eligible cards · ${modeCopy}${experimentCopy} · automatic sweet-spot batches of 50 · ` +
     `${(state.cards.length - eligible.length).toLocaleString()} first-edition rows excluded`;
   updateScenarioSelectionCounts();
   updateWorkEstimate();
@@ -1293,6 +1321,70 @@ function effectiveMix(weights) {
   }
 }
 
+function scenarioGradeMix(scenario) {
+  try {
+    const normalized = normalizeWeights(scenario.weights);
+    return [normalized.p7, normalized.p8, normalized.p9, normalized.p10];
+  } catch {
+    return null;
+  }
+}
+
+function scenarioGradeMatches(mix) {
+  return state.scenarios
+    .map((scenario) => {
+      const scenarioMix = scenarioGradeMix(scenario);
+      if (!scenarioMix) return null;
+      const averageGap = mix.reduce(
+        (sum, value, index) => sum + Math.abs(value - scenarioMix[index]),
+        0
+      ) / mix.length;
+      return { scenario, scenarioMix, averageGap };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.averageGap - b.averageGap);
+}
+
+function gradeCountCopy(counts, digits = 0) {
+  return counts.map((count, index) => {
+    const safe = Number(count) || 0;
+    if (!safe) return "";
+    const value = digits
+      ? safe.toFixed(digits).replace(/\.0$/, "")
+      : Math.round(safe).toLocaleString();
+    return `${GRADE_LABELS[index].replace("PSA ", "")}: ${value}`;
+  }).filter(Boolean).join(" · ") || "No grades yet";
+}
+
+function renderPortfolioGradeMatchCard(profile, options) {
+  const {
+    title,
+    emptyCopy,
+    countCopy,
+    detailCopy,
+    digits = 0
+  } = options;
+  const hasData = profile.totalWeight > 0;
+  const matches = hasData ? scenarioGradeMatches(profile.mix) : [];
+  const best = matches[0];
+  const runners = matches.slice(1, 3);
+  return `<article class="portfolio-grade-card">
+    <div class="visual-card-head">
+      <span>${escapeHtml(title)}</span>
+      <strong>${best ? escapeHtml(best.scenario.name) : "—"}</strong>
+    </div>
+    ${hasData ? gradeStackMarkup(profile.mix, title) : `<div class="empty-grade-stack">${escapeHtml(emptyCopy)}</div>`}
+    <div class="scenario-mix-ledger portfolio-grade-ledger">
+      ${hasData ? gradeLedgerMarkup(profile.mix, null, profile.counts) : ""}
+    </div>
+    <p><b>${escapeHtml(countCopy)}</b>${detailCopy ? ` ${escapeHtml(detailCopy)}` : ""}</p>
+    <small>${best
+      ? `Closest to ${escapeHtml(best.scenario.name)} · average bucket gap ${(best.averageGap * 100).toFixed(1)} pts${runners.length ? ` · next: ${runners.map((item) => `${escapeHtml(item.scenario.name)} ${(item.averageGap * 100).toFixed(1)} pts`).join(", ")}` : ""}`
+      : "Add actual grades or My Estimate values to compare against your scenario suite."}</small>
+    <small class="context-copy">${escapeHtml(gradeCountCopy(profile.counts, digits))}</small>
+  </article>`;
+}
+
 function renderScenarioRows() {
   el("scenarioRows").innerHTML = state.scenarios.map((scenario) => `
     <tr data-id="${escapeHtml(scenario.id)}">
@@ -1312,6 +1404,7 @@ function renderScenarioRows() {
   updateWorkEstimate();
   refreshOptimizerScenarioSelect();
   renderPortfolio();
+  renderGradeExperiment();
 }
 
 function updateScenarioSelectionCounts() {
@@ -1645,8 +1738,28 @@ function renderSummaryTable() {
   const target = numberValue("profitTarget");
   el("summaryRows").innerHTML = results.map((result) => {
     const summary = result.summary;
+    const realGradeCounts = result.actualGradeCounts
+      ? GRADE_LABELS.map((_, index) =>
+          Math.max(
+            0,
+            Number(result.actualGradeCounts[index] || 0) -
+              Number(result.experimentalGradeCounts?.[index] || 0)
+          )
+        )
+      : [];
+    const realGrades = GRADE_LABELS.map((label, index) =>
+      realGradeCounts[index]
+        ? `${realGradeCounts[index].toLocaleString()} real ${label}`
+        : ""
+    ).filter(Boolean);
+    const experimentalGrades = GRADE_LABELS.map((label, index) =>
+      result.experimentalGradeCounts?.[index]
+        ? `${result.experimentalGradeCounts[index].toLocaleString()} test ${label}`
+        : ""
+    ).filter(Boolean);
+    const knownGrades = [...realGrades, ...experimentalGrades].join(" · ");
     return `<tr class="clickable" data-scenario-id="${escapeHtml(result.scenarioId)}">
-      <td><strong>${escapeHtml(result.name)}</strong><br><span class="effective-mix">${effectiveMix(result.weights)} · chase 10 ${result.allowChasePsa10 === false ? "off" : "on"} · ${result.selectionOptimization ? "automatic ranked sweet spot" : "saved batch"}</span></td>
+      <td><strong>${escapeHtml(result.name)}</strong><br><span class="effective-mix">${effectiveMix(result.weights)} · chase 10 ${result.allowChasePsa10 === false ? "off" : "on"} · ${result.selectionOptimization ? "automatic ranked sweet spot" : "saved batch"}${knownGrades ? ` · ${escapeHtml(knownGrades)}` : ""}</span></td>
       <td>${result.analysisMode === "live"
         ? `${Number(result.futureCardCount || 0).toLocaleString()} next + ${Number(result.committedCardCount || 0).toLocaleString()} committed`
         : result.cardCount.toLocaleString()}</td>
@@ -1683,15 +1796,199 @@ function refreshOptimizerScenarioSelect() {
       <span><strong>${escapeHtml(scenario.name)}</strong><small>${effectiveMix(scenario.weights)} · chase 10 ${scenario.allowChasePsa10 === false ? "off" : "on"}</small></span>
     </label>`)
     .join("");
-    
-  const condSelect = el("optimizerConditioningScenario");
-  if (condSelect) {
-    const current = condSelect.value;
-    condSelect.innerHTML = state.scenarios.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join("");
-    if (current && state.scenarios.some(s => s.id === current)) condSelect.value = current;
-  }
-  
   updateOptimizerWorkEstimate();
+}
+
+function experimentScenario(id) {
+  return state.scenarios.find((scenario) => scenario.id === id) ||
+    state.scenarios.find((scenario) => scenario.enabled) ||
+    state.scenarios[0] ||
+    null;
+}
+
+function activeGradeExperiment(
+  baseCards = applyPortfolioToCards(state.cards, state.portfolio, true)
+) {
+  const rankingScenario = experimentScenario(
+    state.gradeExperiment.rankingScenarioId
+  );
+  const drawScenario = experimentScenario(
+    state.gradeExperiment.drawScenarioId
+  );
+  if (!rankingScenario || !drawScenario) {
+    return { assignments: [] };
+  }
+  const config = currentConfig();
+  const laborCost = Math.max(0, numberValue("optimizerLaborCost"));
+  const eligible = baseCards.filter(
+    (card) => includeFirstEditions() || !isFirstEdition(card)
+  );
+  const cacheKey = JSON.stringify({
+    datasetRevision: state.datasetEditRevision,
+    portfolioUpdatedAt: state.portfolio.updatedAt,
+    seed: state.gradeExperiment.seed,
+    rankingScenario,
+    drawScenario,
+    respectPersonalEstimates: state.gradeExperiment.respectPersonalEstimates,
+    config,
+    laborCost,
+    eligibleCount: eligible.length
+  });
+  if (
+    state.gradeExperiment.cacheKey !== cacheKey ||
+    !state.gradeExperiment.definition
+  ) {
+    state.gradeExperiment.cacheKey = cacheKey;
+    state.gradeExperiment.definition = buildGradeExperiment(eligible, {
+      config,
+      rankingScenario,
+      drawScenario,
+      seed: state.gradeExperiment.seed,
+      respectPersonalEstimates: state.gradeExperiment.respectPersonalEstimates,
+      laborCost
+    });
+  }
+  return state.gradeExperiment.definition;
+}
+
+function restoreModeAfterExperiment() {
+  if (state.gradeExperiment.previousAnalysisMode) {
+    el("analysisMode").value = state.gradeExperiment.previousAnalysisMode;
+    state.gradeExperiment.previousAnalysisMode = null;
+  }
+}
+
+function setExperimentCount(value, render = true) {
+  const definition = activeGradeExperiment();
+  const count = clamp(
+    Math.round(Number(value) || 0),
+    0,
+    definition.assignments.length
+  );
+  const wasActive = state.gradeExperiment.count > 0;
+  state.gradeExperiment.count = count;
+  if (count > 0 && !wasActive) {
+    state.gradeExperiment.previousAnalysisMode = el("analysisMode").value;
+    el("analysisMode").value = "live";
+  } else if (!count && wasActive) {
+    restoreModeAfterExperiment();
+  }
+  invalidateResultsAfterDatasetEdit();
+  updateCollectionSummary();
+  if (render) renderGradeExperiment();
+}
+
+function renderGradeExperiment() {
+  if (!el("experimentGradeSlider") || !state.cards.length) return;
+  const enabledScenarios = state.scenarios.filter((scenario) => scenario.enabled);
+  const fallbackId = enabledScenarios[0]?.id || state.scenarios[0]?.id || "";
+  if (!state.scenarios.some(
+    (scenario) => scenario.id === state.gradeExperiment.rankingScenarioId
+  )) {
+    state.gradeExperiment.rankingScenarioId = fallbackId;
+  }
+  if (!state.scenarios.some(
+    (scenario) => scenario.id === state.gradeExperiment.drawScenarioId
+  )) {
+    state.gradeExperiment.drawScenarioId = fallbackId;
+  }
+  const optionMarkup = state.scenarios.map((scenario) =>
+    `<option value="${escapeHtml(scenario.id)}">${escapeHtml(scenario.name)} · ${effectiveMix(scenario.weights)}</option>`
+  ).join("");
+  el("experimentRankingScenario").innerHTML = optionMarkup;
+  el("experimentDrawScenario").innerHTML = optionMarkup;
+  el("experimentRankingScenario").value =
+    state.gradeExperiment.rankingScenarioId;
+  el("experimentDrawScenario").value =
+    state.gradeExperiment.drawScenarioId;
+  el("experimentRespectEstimates").checked =
+    state.gradeExperiment.respectPersonalEstimates;
+
+  const definition = activeGradeExperiment();
+  const maximum = definition.assignments.length;
+  state.gradeExperiment.count = clamp(
+    state.gradeExperiment.count,
+    0,
+    maximum
+  );
+  const count = state.gradeExperiment.count;
+  el("experimentGradeSlider").max = maximum;
+  el("experimentGradeNumber").max = maximum;
+  el("experimentGradeSlider").value = count;
+  el("experimentGradeNumber").value = count;
+  el("experimentCountLabel").textContent =
+    `${count.toLocaleString()} of ${maximum.toLocaleString()} cards`;
+  el("experimentStatus").textContent = count
+    ? `${count.toLocaleString()} synthetic`
+    : "Inactive";
+  el("experimentStatus").classList.toggle("experiment-active", count > 0);
+  el("clearExperimentBtn").disabled = !count;
+  el("runExperimentOptimizerBtn").disabled = !count;
+
+  const config = currentConfig();
+  const laborCost = Math.max(0, numberValue("optimizerLaborCost"));
+  const rankingScenario = experimentScenario(
+    state.gradeExperiment.rankingScenarioId
+  );
+  const primary = experimentProgress(
+    definition,
+    count,
+    config,
+    rankingScenario,
+    laborCost
+  );
+  const gradeCopy = GRADE_LABELS.map((label, index) =>
+    primary.gradeCounts[index]
+      ? `${label} × ${primary.gradeCounts[index].toLocaleString()}`
+      : ""
+  ).filter(Boolean).join(" · ") || "No synthetic grades";
+  const estimateDrivenCount = primary.selected.filter(
+    (assignment) => assignment.gradeSource === "myEstimate"
+  ).length;
+  const drawScenario = experimentScenario(state.gradeExperiment.drawScenarioId);
+  const gradeSourceCopy = state.gradeExperiment.respectPersonalEstimates
+    ? `${estimateDrivenCount.toLocaleString()} from My Estimate · ${(primary.selected.length - estimateDrivenCount).toLocaleString()} from ${drawScenario.name}`
+    : `All grades from ${drawScenario.name}`;
+  el("experimentMetrics").innerHTML = `
+    <article class="metric-card reality-total-card">
+      <span>Synthetic grade mix</span>
+      <strong>${escapeHtml(gradeCopy)}</strong>
+      <small>${escapeHtml(gradeSourceCopy)} · Seed ${state.gradeExperiment.seed.toLocaleString()}</small>
+    </article>
+    <article class="metric-card">
+      <span>Dataset value revealed</span>
+      <strong>${money(primary.grossValue)}</strong>
+      <small>${money(primary.actualAddedValue)} added value over selling these cards raw</small>
+    </article>
+    ${enabledScenarios.map((scenario) => {
+      const progress = experimentProgress(
+        definition,
+        count,
+        config,
+        scenario,
+        laborCost
+      );
+      return `<article class="metric-card">
+        <span>Versus ${escapeHtml(scenario.name)}</span>
+        <strong class="${progress.delta >= 0 ? "positive" : "negative"}">${progress.delta >= 0 ? "+" : ""}${money(progress.delta)}</strong>
+        <small>Synthetic uplift ${money(progress.actualAddedValue)} vs ${money(progress.expectedAddedValue)} expected</small>
+      </article>`;
+    }).join("")}`;
+  el("experimentExplanation").innerHTML = count
+    ? `<strong>Checkpoint at EV rank ${count.toLocaleString()}.</strong> The first ${count.toLocaleString()} ungraded cards under ${escapeHtml(rankingScenario.name)} now behave as deterministic grades in any optimizer or suite run. ${state.gradeExperiment.respectPersonalEstimates ? "Cards with a Portfolio Tracker My Estimate use that estimate/confidence curve first; the rest" : "Every eligible card"} draws once from ${escapeHtml(drawScenario.name)} and remains stable while you move backward and forward.`
+    : `<strong>No experiment is active.</strong> Move the slider to reveal grades. Nothing here writes to Portfolio Tracker.`;
+  const recent = primary.selected.slice(Math.max(0, primary.selected.length - 10));
+  el("experimentRecentRows").innerHTML = recent.length
+    ? recent.map((assignment) => {
+        const value = valueForGrade(assignment.card, assignment.grade - 7);
+        return `<tr>
+          <td>${assignment.rank.toLocaleString()}</td>
+          <td><strong>${escapeHtml(assignment.card.card)}</strong><br><span class="context-copy">${escapeHtml(assignment.card.set)}</span></td>
+          <td><span class="status-pill experiment-active">PSA ${assignment.grade}</span><br><span class="context-copy">${assignment.gradeSource === "myEstimate" ? `My Estimate${assignment.estimatedGrade ? ` PSA ${assignment.estimatedGrade}` : ""}` : "Scenario mix"}</span></td>
+          <td>${money(value)}</td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="4" class="context-copy">Move the slider to reveal the first synthetic grades.</td></tr>`;
 }
 
 function optimizerEligibleCards() {
@@ -1704,10 +2001,7 @@ function updateOptimizerWorkEstimate() {
   const cards = optimizerEligibleCards().length;
   const simulations = numberValue("optimizerSimulationCount");
   const scenarioCount = state.optimizerSelectedScenarioIds.size;
-  
-  el("optimizerConditioningSlider").max = cards;
-  el("optimizerConditioningNumber").max = cards;
-  
+
   if (!cards) {
     el("optimizerWorkEstimate").textContent = "Load the collection first";
     return;
@@ -1790,18 +2084,18 @@ function optimizerSeriesChart(containerId, series, globalRange = null, condition
           <text class="global-sweet-label" x="${startX + bandWidth / 2}" y="${margin.top + 16}" text-anchor="middle">GLOBAL SWEET RANGE · ${globalRange.efficientStart.toLocaleString()}–${globalRange.positiveCeiling.toLocaleString()}</text>`;
       })()
     : "";
-    
+
   const conditioningMarkup = conditioningCount > 0
     ? (() => {
         const condX = x(conditioningCount);
         const dotMarkup = deterministicProfit !== null
-          ? `<circle cx="${condX}" cy="${y(deterministicProfit)}" r="10" fill="#f4f8f5" stroke="var(--text-muted)" stroke-width="3" />
-             <circle cx="${condX}" cy="${y(deterministicProfit)}" r="5" fill="var(--text-muted)" />
-             <text class="global-sweet-label" x="${condX}" y="${y(deterministicProfit) - 16}" text-anchor="middle" fill="var(--text-muted)" font-weight="700">${money(deterministicProfit)}</text>`
+          ? `<circle class="reality-current-dot" cx="${condX}" cy="${y(deterministicProfit)}" r="10" fill="#f4f8f5" />
+             <circle cx="${condX}" cy="${y(deterministicProfit)}" r="5" fill="var(--gold)" />
+             <text class="reality-checkpoint-label" x="${condX}" y="${y(deterministicProfit) - 16}" text-anchor="middle">${money(deterministicProfit)}</text>`
           : "";
         return `
-          <line class="global-sweet-boundary" x1="${condX}" x2="${condX}" y1="${margin.top}" y2="${height - margin.bottom}" stroke-dasharray="6,4" stroke="var(--text-muted)" stroke-width="2" />
-          <text class="global-sweet-label" x="${condX}" y="${margin.top + 32}" text-anchor="middle" fill="var(--text-muted)">WHERE I'M AT NOW (${conditioningCount.toLocaleString()})</text>
+          <line class="reality-checkpoint-line" x1="${condX}" x2="${condX}" y1="${margin.top}" y2="${height - margin.bottom}" />
+          <text class="reality-checkpoint-label" x="${condX}" y="${margin.top + 32}" text-anchor="middle">TODAY · ${conditioningCount.toLocaleString()} COMMITTED</text>
           ${dotMarkup}`;
       })()
     : "";
@@ -1824,7 +2118,7 @@ function optimizerSeriesChart(containerId, series, globalRange = null, condition
     <line class="optimizer-axis" x1="${margin.left}" x2="${width - margin.right}" y1="${height - margin.bottom}" y2="${height - margin.bottom}" />
     ${xTicks.map((value) => `<text class="optimizer-tick" x="${x(value)}" y="${height - margin.bottom + 23}" text-anchor="middle">${Math.round(value).toLocaleString()}</text>`).join("")}
     ${yTicks.map((value) => `<text class="optimizer-tick" x="${margin.left - 12}" y="${y(value) + 4}" text-anchor="end">${money(value, true)}</text>`).join("")}
-    <text class="optimizer-axis-label" x="${margin.left + plotWidth / 2}" y="${height - 13}" text-anchor="middle">${liveModeEnabled() ? "Additional cards sent to PSA →" : "Cards sent to PSA →"}</text>
+    <text class="optimizer-axis-label" x="${margin.left + plotWidth / 2}" y="${height - 13}" text-anchor="middle">${liveModeEnabled() ? "Total graded / sent cards →" : "Cards sent to PSA →"}</text>
     <text class="optimizer-axis-label" transform="translate(18 ${margin.top + plotHeight / 2}) rotate(-90)" text-anchor="middle">Portfolio profit</text>
   </svg>`;
 }
@@ -1937,11 +2231,24 @@ function renderOptimizerResults() {
   ).join("") + (globalRange?.hasOverlap
     ? `<span><i class="global-range-swatch"></i>Global sweet range</span>`
     : "");
-  const conditioningCount = state.optimizerResults[0]?.conditioning?.count || 0;
-  const deterministicProfit = conditioningCount > 0
-    ? state.optimizerResults[0]?.deterministicProfit ?? null
+  const committedCount = state.optimizerResults[0]?.committedGradingCount || 0;
+  const chartGlobalRange = globalRange
+    ? {
+        ...globalRange,
+        efficientStart: globalRange.efficientStart + committedCount,
+        positiveCeiling: globalRange.positiveCeiling + committedCount
+      }
     : null;
-  optimizerSeriesChart("frontierChart", series, globalRange, conditioningCount, deterministicProfit);
+  const realityProfit = committedCount > 0
+    ? state.optimizerResults[0]?.baseProfit ?? null
+    : null;
+  optimizerSeriesChart(
+    "frontierChart",
+    series,
+    chartGlobalRange,
+    committedCount,
+    realityProfit
+  );
   if (globalRange?.hasOverlap) {
     el("globalFrontierExplanation").innerHTML =
       `<strong>Global recommendation: ${globalRange.recommendedCount.toLocaleString()} cards.</strong> ` +
@@ -2042,20 +2349,6 @@ async function runOptimizer() {
     return toast(error.message);
   }
 
-  const condCount = numberValue("optimizerConditioningNumber") || 0;
-  let conditioning = null;
-  if (condCount > 0) {
-    const condScenarioId = el("optimizerConditioningScenario").value;
-    const condScenario = state.scenarios.find(s => s.id === condScenarioId);
-    if (condScenario) {
-      conditioning = {
-        count: condCount,
-        weights: structuredClone(condScenario.weights),
-        allowChasePsa10: condScenario.allowChasePsa10 !== false
-      };
-    }
-  }
-
   const cards = optimizerEligibleCards();
   state.optimizerRunning = true;
   el("runOptimizerBtn").disabled = true;
@@ -2092,8 +2385,7 @@ async function runOptimizer() {
             seed,
             frontierStep: Math.max(1, Math.floor(numberValue("optimizerFrontierStep"))),
             laborCost: Math.max(0, numberValue("optimizerLaborCost")),
-            excludedFirstEditions: state.cards.length - cards.length,
-            conditioning
+            excludedFirstEditions: state.cards.length - cards.length
           }, (progress) => {
             progresses[index] = progress;
             updateProgress();
@@ -2512,6 +2804,7 @@ function persistPortfolioChange(message = "") {
     );
   }, 250);
   renderPortfolio();
+  renderGradeExperiment();
   updateCollectionSummary();
   if (message) toast(message);
 }
@@ -2591,12 +2884,33 @@ function renderPortfolio() {
   ).join("");
   el("portfolioScenario").value = state.portfolioScenarioId;
   const summary = portfolioSummary(state.cards, state.portfolio);
+  const actualProfile = portfolioGradeProfile(state.cards, state.portfolio, false);
+  const projectedProfile = portfolioGradeProfile(state.cards, state.portfolio, true);
   el("portfolioMetrics").innerHTML = `
     <article class="metric-card"><span>Inventory</span><strong>${summary.counts.inventory.toLocaleString()}</strong><small>Raw cards</small></article>
     <article class="metric-card"><span>Next</span><strong>${summary.counts.planned.toLocaleString()}</strong><small>Planned</small></article>
     <article class="metric-card"><span>At PSA</span><strong>${summary.counts.submitted.toLocaleString()}</strong><small>Uncertain but committed</small></article>
     <article class="metric-card"><span>Grades back</span><strong>${summary.counts.graded.toLocaleString()}</strong><small>Deterministic grades</small></article>
     <article class="metric-card"><span>Sold</span><strong>${summary.counts.sold.toLocaleString()}</strong><small>${money(summary.realizedGross)} actual gross</small></article>`;
+  el("portfolioGradeStats").innerHTML = `
+    ${renderPortfolioGradeMatchCard(actualProfile, {
+      title: "Actual PSA results so far",
+      emptyCopy: "Enter actual PSA grades to see your observed mix.",
+      countCopy: `${actualProfile.actualCardCount.toLocaleString()} graded card${actualProfile.actualCardCount === 1 ? "" : "s"} observed`,
+      detailCopy: actualProfile.actualCardCount
+        ? "These are deterministic results already back from PSA."
+        : "",
+      digits: 0
+    })}
+    ${renderPortfolioGradeMatchCard(projectedProfile, {
+      title: "Actuals + My Estimate respected",
+      emptyCopy: "Add actual grades or My Estimate values to project a mix.",
+      countCopy: `${projectedProfile.actualCardCount.toLocaleString()} actual + ${projectedProfile.estimatedCardCount.toLocaleString()} estimated card${projectedProfile.estimatedCardCount === 1 ? "" : "s"}`,
+      detailCopy: projectedProfile.estimatedCardCount
+        ? "Estimates are counted as expected fractional PSA outcomes using your confidence setting."
+        : "No ungraded My Estimate values are currently adding forward-looking weight.",
+      digits: 1
+    })}`;
   const ranking = portfolioRanking();
   const { filtered, pageRows, pageCount, start, rankById } = portfolioTableData(ranking);
   el("portfolioRows").innerHTML = pageRows.map((card) => {
@@ -2680,6 +2994,7 @@ function switchView(view) {
     syncScenariosFromDomIfPresent();
     refreshOptimizerScenarioSelect();
     updateOptimizerWorkEstimate();
+    renderGradeExperiment();
   }
   if (view === "salePlanner") refreshSalePlanner();
   if (view === "portfolio") renderPortfolio();
@@ -2714,11 +3029,32 @@ function renderDetail() {
   if (!result) return;
   el("detailTitle").textContent = result.name;
   const scenarioMix = [result.weights.p7, result.weights.p8, result.weights.p9, result.weights.p10];
+  const realGradeCounts = result.actualGradeCounts
+    ? GRADE_LABELS.map((_, index) =>
+        Math.max(
+          0,
+          Number(result.actualGradeCounts[index] || 0) -
+            Number(result.experimentalGradeCounts?.[index] || 0)
+        )
+      )
+    : [];
+  const realGradeLedger = GRADE_LABELS.map((label, index) =>
+    realGradeCounts[index]
+      ? `<span class="simulation-ledger known-grade-ledger">${realGradeCounts[index].toLocaleString()} recorded ${escapeHtml(label)}</span>`
+      : ""
+  ).filter(Boolean).join("");
+  const experimentGradeLedger = GRADE_LABELS.map((label, index) =>
+    result.experimentalGradeCounts?.[index]
+      ? `<span class="simulation-ledger experiment-grade-ledger">${result.experimentalGradeCounts[index].toLocaleString()} test ${escapeHtml(label)}</span>`
+      : ""
+  ).filter(Boolean).join("");
   el("detailWeights").innerHTML = `
     ${gradeStackMarkup(scenarioMix, "Scenario grade assumption")}
     <div class="scenario-mix-ledger">
       ${gradeLedgerMarkup(scenarioMix)}
       <span class="simulation-ledger">${result.allowChasePsa10 === false ? "Chase-card PSA 10 blocked" : "Chase-card PSA 10 allowed"}</span>
+      ${realGradeLedger}
+      ${experimentGradeLedger}
       ${result.conditionedCardCount ? `<span class="simulation-ledger">${result.conditionedCardCount.toLocaleString()} cards use personal or actual grades</span>` : ""}
       <span class="simulation-ledger">${result.cardCount.toLocaleString()} cards · ${result.selectionOptimization ? "automatic ranked sweet spot" : "saved batch"}</span>
       <span class="simulation-ledger">${result.simulations.toLocaleString()} simulations</span>
@@ -3590,9 +3926,15 @@ function bindEvents() {
     el(id).addEventListener("input", updateCollectionSummary)
   );
   el("analysisMode").addEventListener("change", () => {
+    if (state.gradeExperiment.count) {
+      state.gradeExperiment.count = 0;
+      state.gradeExperiment.previousAnalysisMode = null;
+      state.gradeExperiment.cacheKey = "";
+    }
     invalidateResultsAfterDatasetEdit();
     updateCollectionSummary();
     renderPortfolio();
+    renderGradeExperiment();
   });
   el("portfolioScenario").addEventListener("change", (event) => {
     state.portfolioScenarioId = event.target.value;
@@ -3716,6 +4058,10 @@ function bindEvents() {
     "optimizerFrontierStep",
     "optimizerLaborCost"
   ].forEach((id) => el(id).addEventListener("input", updateOptimizerWorkEstimate));
+  el("optimizerLaborCost").addEventListener("change", () => {
+    state.gradeExperiment.cacheKey = "";
+    renderGradeExperiment();
+  });
   el("optimizerScenarioChoices").addEventListener("change", (event) => {
     const checkbox = event.target.closest("[data-optimizer-scenario]");
     if (!checkbox) return;
@@ -3725,6 +4071,54 @@ function bindEvents() {
       state.optimizerSelectedScenarioIds.delete(checkbox.dataset.optimizerScenario);
     }
     updateOptimizerWorkEstimate();
+  });
+  ["experimentRankingScenario", "experimentDrawScenario"]
+    .forEach((id) => el(id).addEventListener("change", (event) => {
+      if (id === "experimentRankingScenario") {
+        state.gradeExperiment.rankingScenarioId = event.target.value;
+      } else {
+        state.gradeExperiment.drawScenarioId = event.target.value;
+      }
+      state.gradeExperiment.cacheKey = "";
+      if (state.gradeExperiment.count) invalidateResultsAfterDatasetEdit();
+      renderGradeExperiment();
+      updateCollectionSummary();
+    }));
+  el("experimentRespectEstimates").addEventListener("change", (event) => {
+    state.gradeExperiment.respectPersonalEstimates = event.target.checked;
+    state.gradeExperiment.cacheKey = "";
+    if (state.gradeExperiment.count) invalidateResultsAfterDatasetEdit();
+    renderGradeExperiment();
+    updateCollectionSummary();
+  });
+  const updateExperimentCount = (value) => {
+    cancelAnimationFrame(updateExperimentCount.frame);
+    updateExperimentCount.frame = requestAnimationFrame(() =>
+      setExperimentCount(value)
+    );
+  };
+  el("experimentGradeSlider").addEventListener("input", (event) =>
+    updateExperimentCount(event.target.value)
+  );
+  el("experimentGradeNumber").addEventListener("input", (event) =>
+    updateExperimentCount(event.target.value)
+  );
+  el("reshuffleExperimentBtn").addEventListener("click", () => {
+    state.gradeExperiment.seed =
+      Math.floor(Math.random() * 0xffffffff) >>> 0;
+    state.gradeExperiment.cacheKey = "";
+    if (state.gradeExperiment.count) invalidateResultsAfterDatasetEdit();
+    renderGradeExperiment();
+    updateCollectionSummary();
+  });
+  el("clearExperimentBtn").addEventListener("click", () =>
+    setExperimentCount(0)
+  );
+  el("runExperimentOptimizerBtn").addEventListener("click", () => {
+    if (!state.gradeExperiment.count) {
+      return toast("Reveal at least one synthetic grade first.");
+    }
+    runOptimizer();
   });
   el("runOptimizerBtn").addEventListener("click", runOptimizer);
   el("cancelOptimizerBtn").addEventListener("click", () => {
@@ -3741,12 +4135,6 @@ function bindEvents() {
   );
   el("optimizerBatchNumber").addEventListener("input", (event) =>
     setOptimizerBatchSize(event.target.value)
-  );
-  el("optimizerConditioningSlider").addEventListener("input", (event) =>
-    el("optimizerConditioningNumber").value = event.target.value
-  );
-  el("optimizerConditioningNumber").addEventListener("input", (event) =>
-    el("optimizerConditioningSlider").value = event.target.value
   );
   el("useSweetSpotBtn").addEventListener("click", () => {
     const result = activeOptimizerResult();

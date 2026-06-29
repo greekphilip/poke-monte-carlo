@@ -13,6 +13,7 @@
   --gold: #f6c85f;
   --coral: #ff806b;
   --blue: #70b7ff;
+  --cyan: #38d6d0;
   --shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
 }
 
@@ -875,13 +876,104 @@ tbody tr.clickable:hover td { background: rgba(119, 232, 181, .055); }
 .portfolio-table th, .portfolio-table td { padding: 8px 12px; }
 .portfolio-table input[type="number"], .portfolio-table select { min-width: 104px; }
 .portfolio-table td:nth-child(2) { min-width: 280px; }
+.portfolio-grade-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+.portfolio-grade-card {
+  padding: 16px;
+  border: 1px solid rgba(119,232,181,.2);
+  border-radius: 16px;
+  background: rgba(5, 18, 14, .42);
+}
+.portfolio-grade-card .grade-stack { margin: 12px 0 10px; }
+.portfolio-grade-card p { margin: 12px 0 7px; color: var(--muted); }
+.portfolio-grade-card small {
+  display: block;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.portfolio-grade-ledger { margin-top: 8px; }
+.empty-grade-stack {
+  margin: 12px 0 10px;
+  padding: 13px;
+  border: 1px dashed rgba(207,236,225,.18);
+  border-radius: 12px;
+  color: var(--muted);
+  background: rgba(207,236,225,.035);
+}
 .status-pill { display: inline-flex; padding: 4px 8px; border: 1px solid rgba(119,232,181,.3); border-radius: 999px; color: var(--mint); font-size: .78rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.known-grade-ledger { color: var(--gold); border-color: rgba(246,200,95,.45); }
+.experiment-panel {
+  border-color: rgba(56,214,208,.34);
+  background:
+    linear-gradient(135deg, rgba(56,214,208,.065), transparent 44%),
+    var(--panel);
+}
+.experiment-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(230px, auto) auto auto;
+  gap: 12px;
+  align-items: end;
+}
+.experiment-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 43px;
+  padding: 10px 12px;
+  border: 1px solid rgba(56,214,208,.22);
+  border-radius: 12px;
+  background: rgba(56,214,208,.04);
+}
+.experiment-checkbox span { color: var(--text); font-weight: 750; }
+.experiment-slider-block {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid rgba(56,214,208,.24);
+  border-radius: 15px;
+  background: rgba(56,214,208,.045);
+}
+.experiment-slider-block > small,
+.experiment-actions > small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.experiment-metrics { margin-top: 16px; }
+.experiment-table-scroll { max-height: 390px; margin-top: 14px; }
+.experiment-table-scroll td:nth-child(2) {
+  min-width: 260px;
+  white-space: normal;
+}
+.experiment-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 14px;
+}
+.experiment-actions > small { margin-top: 0; }
+.status-pill.experiment-active,
+.experiment-grade-ledger {
+  color: var(--cyan);
+  border-color: rgba(56,214,208,.5);
+  background: rgba(56,214,208,.09);
+}
+.reality-checkpoint-line { stroke: var(--gold); stroke-width: 2; stroke-dasharray: 7 5; }
+.reality-checkpoint-label { fill: var(--gold); font-size: 12px; font-weight: 900; letter-spacing: .08em; }
+.reality-current-dot { stroke: #fff7d6; stroke-width: 3; }
+.reality-total-card { border-color: rgba(246,200,95,.45); }
+.reality-total-card strong { color: var(--gold); font-size: 1.15rem; }
 .hidden { display: none !important; }
 
 @media (max-width: 1100px) {
   .field-grid { grid-template-columns: repeat(3, 1fr); }
   .metric-grid { grid-template-columns: repeat(3, 1fr); }
   .optimizer-controls { grid-template-columns: repeat(3, 1fr); }
+  .experiment-controls { grid-template-columns: repeat(2, 1fr); }
   .optimizer-scenario-field { grid-column: span 2; }
   .optimizer-summary { grid-template-columns: repeat(2, 1fr); }
   .run-bar { grid-template-columns: 1fr 1fr; }
@@ -897,6 +989,9 @@ tbody tr.clickable:hover td { background: rgba(119, 232, 181, .055); }
   .section-heading { flex-direction: column; }
   .field-grid, .metric-grid, .visual-requirements { grid-template-columns: 1fr; }
   .optimizer-methods, .optimizer-controls, .optimizer-summary { grid-template-columns: 1fr; }
+  .portfolio-grade-stats { grid-template-columns: 1fr; }
+  .experiment-controls { grid-template-columns: 1fr; }
+  .experiment-actions { align-items: stretch; flex-direction: column; }
   .optimizer-scenario-field { grid-column: auto; }
   .optimizer-scenario-choices { grid-template-columns: 1fr; }
   .optimizer-run-bar { grid-template-columns: 1fr; }

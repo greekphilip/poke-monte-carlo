@@ -213,6 +213,97 @@ test("actual grades are deterministic and personal estimates override scenario w
   assert.equal(estimatedTens, 20);
 });
 
+test("known PSA 10 uses the dataset PSA 10 value when no sale price exists", async () => {
+  const knownTen = {
+    id: 1,
+    set: "S",
+    card: "Dataset-valued PSA 10",
+    raw: 100,
+    p7: 1000,
+    p8: 5000,
+    p9: 20000,
+    p10: 90000,
+    actualGrade: 10
+  };
+  const result = await simulateScenario({
+    cards: [knownTen],
+    rawValue: 0,
+    config: {
+      ...config,
+      acquisitionCost: 0,
+      sellingFeePct: 0,
+      miscExpenses: 0,
+      fees: {
+        fee1500: 0,
+        fee2500: 0,
+        fee5000: 0,
+        fee10000: 0,
+        premiumFee: 0
+      }
+    },
+    scenario: {
+      id: "all-sevens",
+      name: "All sevens",
+      weights: { p7: 1, p8: 0, p9: 0, p10: 0 }
+    },
+    simulations: 10,
+    seed: 55,
+    bucketCount: 4
+  });
+  let tenCount = 0;
+  let valueTotal = 0;
+  for (let bucket = 0; bucket < result.bucketCount; bucket++) {
+    tenCount += result.gradeCounts[(bucket * result.cardCount * 4) + 3];
+    valueTotal += result.valueSums[bucket * result.cardCount];
+  }
+  assert.equal(tenCount, 10);
+  assert.equal(valueTotal, 900000);
+  assert.deepEqual([...result.actualGradeCounts], [0, 0, 0, 1]);
+});
+
+test("synthetic experiment grades are deterministic and reported separately", async () => {
+  const result = await simulateScenario({
+    cards: [
+      {
+        id: 1,
+        set: "S",
+        card: "Real nine",
+        raw: 10,
+        p7: 20,
+        p8: 30,
+        p9: 40,
+        p10: 100,
+        actualGrade: 9
+      },
+      {
+        id: 2,
+        set: "S",
+        card: "Synthetic ten",
+        raw: 10,
+        p7: 20,
+        p8: 30,
+        p9: 40,
+        p10: 100,
+        actualGrade: 10,
+        experimentalGrade: true
+      }
+    ],
+    rawValue: 0,
+    config,
+    scenario: {
+      id: "all-sevens",
+      name: "All sevens",
+      weights: { p7: 1, p8: 0, p9: 0, p10: 0 }
+    },
+    simulations: 5,
+    seed: 101,
+    bucketCount: 4
+  });
+  assert.deepEqual([...result.actualGradeCounts], [0, 0, 1, 1]);
+  assert.deepEqual([...result.experimentalGradeCounts], [0, 0, 0, 1]);
+  assert.equal(result.conditionedCardCount, 2);
+});
+
 test("first editions are explicitly included or excluded", () => {
   const options = {
     cardCount: 3,

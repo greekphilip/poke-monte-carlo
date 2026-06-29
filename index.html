@@ -314,19 +314,6 @@
                 <small>Optional. Use this to price sorting, paperwork, shipping labor, and hassle.</small>
               </label>
             </div>
-            <div class="optimizer-simulation-conditioning" style="padding-top:1rem; border-top:1px solid var(--border-medium);">
-              <span style="display:block; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; color:var(--text-muted);">Simulate already sent cards (Jump-off point)</span>
-              <div style="display:flex; gap:1rem; align-items:flex-end; flex-wrap:wrap">
-                <label class="field">
-                  <span>Simulated reality scenario</span>
-                  <select id="optimizerConditioningScenario"></select>
-                </label>
-                <div class="batch-slider-row" style="flex:1; min-width:250px; margin-bottom:0.5rem">
-                  <input id="optimizerConditioningSlider" class="batch-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Simulated sent cards" />
-                  <input id="optimizerConditioningNumber" class="batch-number" type="number" min="0" max="0" value="0" step="1" aria-label="Exact simulated sent cards" />
-                </div>
-              </div>
-            </div>
           </div>
         </div>
         <div class="optimizer-run-bar">
@@ -340,6 +327,56 @@
         <div id="optimizerProgressRegion" class="progress-region hidden" aria-live="polite">
           <div class="progress-copy"><span id="optimizerRunStatus">Preparing…</span><strong id="optimizerProgressPct">0%</strong></div>
           <div class="progress-track"><span id="optimizerProgressBar"></span></div>
+        </div>
+      </section>
+
+      <section class="panel experiment-panel">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Disposable what-if</p>
+            <h2>Grade reveal experiment</h2>
+            <p class="context-copy">Reveal synthetic grades in EV order and watch each scenario move ahead or behind. These grades exist only in memory: sliding backward removes them, Clear removes all of them, and reloading the app resets the experiment.</p>
+          </div>
+          <span id="experimentStatus" class="status-pill">Inactive</span>
+        </div>
+        <div class="experiment-controls">
+          <label class="field">
+            <span>EV ranking order</span>
+            <select id="experimentRankingScenario"></select>
+          </label>
+          <label class="field">
+            <span>Random grade mix</span>
+            <select id="experimentDrawScenario"></select>
+          </label>
+          <label class="checkbox-field experiment-checkbox">
+            <input id="experimentRespectEstimates" type="checkbox" checked />
+            <span>Respect Portfolio Tracker “My Estimate” first</span>
+          </label>
+          <button id="reshuffleExperimentBtn" class="button ghost" type="button">Reshuffle grades</button>
+          <button id="clearExperimentBtn" class="button danger" type="button">Clear experiment</button>
+        </div>
+        <div class="experiment-slider-block">
+          <div class="sale-stage-heading">
+            <span>Synthetic grades revealed</span>
+            <strong id="experimentCountLabel">0 cards</strong>
+          </div>
+          <div class="batch-slider-row">
+            <input id="experimentGradeSlider" class="batch-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Number of synthetic grades revealed" />
+            <input id="experimentGradeNumber" class="batch-number" type="number" min="0" max="0" value="0" step="1" aria-label="Exact number of synthetic grades revealed" />
+          </div>
+          <small>Assignments are stable for this seed. With My Estimate on, estimated cards use the same estimate/confidence weighting as simulations; all other cards use the selected random grade mix.</small>
+        </div>
+        <section id="experimentMetrics" class="optimizer-summary experiment-metrics"></section>
+        <div id="experimentExplanation" class="optimizer-callout"></div>
+        <div class="table-scroll experiment-table-scroll">
+          <table class="data-table">
+            <thead><tr><th>EV rank</th><th>Card</th><th>Synthetic grade</th><th>Dataset value</th></tr></thead>
+            <tbody id="experimentRecentRows"></tbody>
+          </table>
+        </div>
+        <div class="experiment-actions">
+          <button id="runExperimentOptimizerBtn" class="button primary" type="button">Run optimizer from this checkpoint</button>
+          <small>The normal optimizer and Scenario Lab both condition on active experimental grades until the experiment is cleared.</small>
         </div>
       </section>
 

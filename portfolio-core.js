@@ -144,3 +144,46 @@ export function portfolioSummary(cards, portfolio) {
   };
 }
 
+const GRADE_KEYS = ["p7", "p8", "p9", "p10"];
+
+export function portfolioGradeProfile(cards, portfolio, includeEstimates = false) {
+  const normalized = normalizePortfolio(portfolio);
+  const actualCounts = [0, 0, 0, 0];
+  const estimateCounts = [0, 0, 0, 0];
+  let actualCardCount = 0;
+  let estimatedCardCount = 0;
+
+  cards.forEach((card) => {
+    const record = normalizeCardRecord(normalized.records[String(card.id)] || {});
+    if (record.actualGrade !== null) {
+      actualCounts[record.actualGrade - 7]++;
+      actualCardCount++;
+      return;
+    }
+    if (!includeEstimates || record.estimatedGrade === null) return;
+    const weights = estimatedGradeWeights(
+      record.estimatedGrade,
+      record.estimateConfidence
+    );
+    GRADE_KEYS.forEach((key, index) => {
+      estimateCounts[index] += weights[key];
+    });
+    estimatedCardCount++;
+  });
+
+  const counts = actualCounts.map(
+    (count, index) => count + estimateCounts[index]
+  );
+  const totalWeight = counts.reduce((sum, count) => sum + count, 0);
+  return {
+    actualCounts,
+    estimateCounts,
+    counts,
+    actualCardCount,
+    estimatedCardCount,
+    totalWeight,
+    mix: totalWeight
+      ? counts.map((count) => count / totalWeight)
+      : [0, 0, 0, 0]
+  };
+}
